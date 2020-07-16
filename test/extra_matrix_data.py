@@ -28,8 +28,8 @@ def skeletonization_error(mat, skel, srcindices, p=None):
         .. math::
 
             \begin{aligned}
-            \epsilon_{l, ij} = \max_{i \ne j} \|A_{ij} - L_{ii} S_{ij}\|_p, \\
-            \epsilon_{r, ij} = \max_{i \ne j} \|A_{ij} - S_{ij} R_{jj}\|_p, \\
+            \epsilon_{l, ij} = \|A_{ij} - L_{ii} S_{ij}\|_p, \\
+            \epsilon_{r, ij} = \|A_{ij} - S_{ij} R_{jj}\|_p, \\
             \epsilon_f = \|A - L S R\|_p.
             \end{aligned}
 
