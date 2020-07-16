@@ -151,7 +151,7 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
     case = case.copy(index_sparsity_factor=index_sparsity_factor)
     logger.info("\n%s", case)
 
-    # {{{ generate proxies
+    # {{{ check proxies
 
     qbx = case.get_layer_potential(actx, case.resolutions[-1], case.target_order)
     places = GeometryCollection(qbx, auto_where=case.name)
@@ -160,101 +160,106 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
     srcindices = case.get_block_indices(actx, density_discr, matrix_indices=False)
 
     from pytential.linalg.proxy import ProxyGenerator
-    generator = ProxyGenerator(places)
-    proxies, pxyranges, pxycenters, pxyradii = \
-            generator(actx, places.auto_source, srcindices)
+    proxies = ProxyGenerator(places)(actx, places.auto_source, srcindices)
 
-    proxies = np.vstack([actx.to_numpy(p) for p in proxies])
-    pxyranges = actx.to_numpy(pxyranges)
-    pxycenters = np.vstack([actx.to_numpy(c) for c in pxycenters])
-    pxyradii = actx.to_numpy(pxyradii)
+    from pytential.utils import flatten_to_numpy
+    proxies = proxies.get(queue)
+    pxypoints = np.vstack(proxies.points)
+    pxycenters = np.vstack(proxies.centers)
+
+    srcindices = srcindices.get(queue)
+    nodes = np.vstack(flatten_to_numpy(actx, density_discr.nodes()))
 
     for i in range(srcindices.nblocks):
-        ipxy = np.s_[pxyranges[i]:pxyranges[i + 1]]
+        isrc = srcindices.block_indices(i)
+        ipxy = proxies.indices.block_indices(i)
 
-        r = la.norm(proxies[:, ipxy] - pxycenters[:, i].reshape(-1, 1), axis=0)
-        assert np.allclose(r - pxyradii[i], 0.0, atol=1.0e-14)
+        r = la.norm(pxypoints[:, ipxy] - pxycenters[:, i].reshape(-1, 1), axis=0)
+        assert np.allclose(r - proxies.radii[i], 0.0, atol=1.0e-14)
+
+        r = la.norm(nodes[:, isrc] - pxycenters[:, i].reshape(-1, 1), axis=0)
+        assert np.all(r - proxies.radii[i] < 0.0)
 
     # }}}
 
     # {{{ visualization
 
-    srcindices = srcindices.get(queue)
-    if visualize:
-        ambient_dim = places.ambient_dim
-        if ambient_dim == 2:
+    if not visualize:
+        return
+
+    ambient_dim = places.ambient_dim
+    if ambient_dim == 2:
+        try:
             import matplotlib.pyplot as pt
+        except ImportError:
+            return
 
-            from pytential.utils import flatten_to_numpy
-            density_nodes = np.vstack(flatten_to_numpy(actx, density_discr.nodes()))
-            ci = bind(places, sym.expansion_centers(ambient_dim, -1))(actx)
-            ci = np.vstack(flatten_to_numpy(actx, ci))
-            ce = bind(places, sym.expansion_centers(ambient_dim, +1))(actx)
-            ce = np.vstack(flatten_to_numpy(actx, ce))
-            r = bind(places, sym.expansion_radii(ambient_dim))(actx)
-            r = flatten_to_numpy(actx, r)
+        ci = np.vstack(flatten_to_numpy(actx,
+            bind(places, sym.expansion_centers(ambient_dim, -1))(actx)
+            ))
+        ce = np.vstack(flatten_to_numpy(actx,
+            bind(places, sym.expansion_centers(ambient_dim, +1))(actx)
+            ))
+        r = flatten_to_numpy(actx,
+                bind(places, sym.expansion_radii(ambient_dim))(actx)
+                )
 
-            for i in range(srcindices.nblocks):
-                isrc = srcindices.block_indices(i)
-                ipxy = np.s_[pxyranges[i]:pxyranges[i + 1]]
+        for i in range(srcindices.nblocks):
+            isrc = srcindices.block_indices(i)
+            ipxy = proxies.indices.block_indices(i)
 
-                pt.figure(figsize=(10, 8))
-                axis = pt.gca()
-                for j in isrc:
-                    c = pt.Circle(ci[:, j], r[j], color='k', alpha=0.1)
-                    axis.add_artist(c)
-                    c = pt.Circle(ce[:, j], r[j], color='k', alpha=0.1)
-                    axis.add_artist(c)
+            pt.figure(figsize=(10, 8))
+            axis = pt.gca()
+            for j in isrc:
+                c = pt.Circle(ci[:, j], r[j], color='k', alpha=0.1)
+                axis.add_artist(c)
+                c = pt.Circle(ce[:, j], r[j], color='k', alpha=0.1)
+                axis.add_artist(c)
 
-                pt.plot(density_nodes[0], density_nodes[1],
-                        'ko', ms=2.0, alpha=0.5)
-                pt.plot(density_nodes[0, srcindices.indices],
-                        density_nodes[1, srcindices.indices],
-                        'o', ms=2.0)
-                pt.plot(density_nodes[0, isrc], density_nodes[1, isrc],
-                        'o', ms=2.0)
-                pt.plot(proxies[0, ipxy], proxies[1, ipxy],
-                        'o', ms=2.0)
-                pt.xlim([-1.5, 1.5])
-                pt.ylim([-1.5, 1.5])
+            pt.plot(nodes[0], nodes[1], 'ko', ms=2.0, alpha=0.5)
+            pt.plot(nodes[0, srcindices.indices], nodes[1, srcindices.indices],
+                    'o', ms=2.0)
+            pt.plot(nodes[0, isrc], nodes[1, isrc], 'o', ms=2.0)
+            pt.plot(pxypoints[0, ipxy], pxypoints[1, ipxy], 'o', ms=2.0)
+            pt.axis("equal")
+            pt.xlim([-1.5, 1.5])
+            pt.ylim([-1.5, 1.5])
 
-                filename = "test_proxy_generator_{}d_{:04}.png".format(
-                        ambient_dim, i)
-                pt.savefig(filename, dpi=300)
-                pt.clf()
-        else:
-            from meshmode.discretization.visualization import make_visualizer
-            from meshmode.mesh.processing import ( # noqa
-                    affine_map, merge_disjoint_meshes)
-            from meshmode.discretization import Discretization
-            from meshmode.discretization.poly_element import \
-                InterpolatoryQuadratureSimplexGroupFactory
+            filename = f"test_proxy_generator_{ambient_dim}d_{i:04}"
+            pt.savefig(filename, dpi=300)
+            pt.clf()
+    else:
+        from meshmode.discretization.visualization import make_visualizer
+        from meshmode.mesh.processing import ( # noqa
+                affine_map, merge_disjoint_meshes)
+        from meshmode.discretization import Discretization
+        from meshmode.discretization.poly_element import \
+            InterpolatoryQuadratureSimplexGroupFactory
 
-            from meshmode.mesh.generation import generate_icosphere
-            ref_mesh = generate_icosphere(1, generator.nproxy)
+        from meshmode.mesh.generation import generate_icosphere
+        ref_mesh = generate_icosphere(1, proxies.nproxy)
 
-            # NOTE: this does not plot the actual proxy points
-            for i in range(srcindices.nblocks):
-                mesh = affine_map(ref_mesh,
-                    A=(pxyradii[i] * np.eye(ambient_dim)),
-                    b=pxycenters[:, i].reshape(-1))
+        # NOTE: this does not plot the actual proxy points
+        for i in range(srcindices.nblocks):
+            mesh = affine_map(ref_mesh,
+                A=(proxies.radii[i] * np.eye(ambient_dim)),
+                b=pxycenters[:, i].reshape(-1))
 
-                mesh = merge_disjoint_meshes([mesh, density_discr.mesh])
-                discr = Discretization(actx, mesh,
-                    InterpolatoryQuadratureSimplexGroupFactory(10))
+            mesh = merge_disjoint_meshes([mesh, density_discr.mesh])
+            discr = Discretization(actx, mesh,
+                InterpolatoryQuadratureSimplexGroupFactory(10))
 
-                vis = make_visualizer(actx, discr, 10)
-                filename = "test_proxy_generator_{}d_{:04}.vtu".format(
-                        ambient_dim, i)
-                vis.write_vtk_file(filename, [])
+            vis = make_visualizer(actx, discr, 10)
+
+            filename = f"test_proxy_generator_{ambient_dim}d_{i:04}.vtu"
+            vis.write_vtk_file(filename, [])
 
     # }}}
 
 
 @pytest.mark.parametrize("case", PROXY_TEST_CASES)
 @pytest.mark.parametrize("index_sparsity_factor", [1.0, 0.6])
-def test_interaction_points(ctx_factory,
-        case, index_sparsity_factor, visualize=False):
+def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=False):
     """Test that neighboring points (inside the proxy balls, but outside the
     current block/cluster) are actually inside.
     """
@@ -276,20 +281,21 @@ def test_interaction_points(ctx_factory,
 
     # generate proxy points
     from pytential.linalg.proxy import ProxyGenerator
-    generator = ProxyGenerator(places)
-    _, _, pxycenters, pxyradii = generator(actx, places.auto_source, srcindices)
+    proxies = ProxyGenerator(places)(actx, places.auto_source, srcindices)
 
     # get neighboring points
-    from pytential.linalg.proxy import (  # noqa
-            gather_block_neighbor_points,
-            gather_block_interaction_points)
-    nbrindices = gather_block_neighbor_points(actx, density_discr,
-            srcindices, pxycenters, pxyradii)
-    nodes, ranges = gather_block_interaction_points(actx,
-            places, places.auto_source, srcindices)
+    from pytential.linalg.proxy import gather_block_neighbor_points
+    nbrindices = gather_block_neighbor_points(actx,
+            density_discr, srcindices, proxies)
 
     srcindices = srcindices.get(queue)
     nbrindices = nbrindices.get(queue)
+
+    from pytential.utils import flatten_to_numpy
+    proxies = proxies.get(queue)
+    pxypoints = np.vstack(proxies.points)
+    pxycenters = np.vstack(proxies.centers)
+    nodes = np.vstack(flatten_to_numpy(actx, density_discr.nodes()))
 
     for i in range(srcindices.nblocks):
         isrc = srcindices.block_indices(i)
@@ -297,63 +303,62 @@ def test_interaction_points(ctx_factory,
 
         assert not np.any(np.isin(inbr, isrc))
 
+        r = la.norm(nodes[:, inbr] - pxycenters[:, i].reshape(-1, 1), axis=0)
+        assert np.all(r - proxies.radii[i] < 0.0)
+
     # }}}
 
     # {{{ visualize
 
-    from pytential.utils import flatten_to_numpy
-    if visualize:
-        ambient_dim = places.ambient_dim
-        if ambient_dim == 2:
+    if not visualize:
+        return
+
+    ambient_dim = places.ambient_dim
+    if ambient_dim == 2:
+        try:
             import matplotlib.pyplot as pt
-            density_nodes = flatten_to_numpy(actx, density_discr.nodes())
-            nodes = flatten_to_numpy(actx, nodes)
-            ranges = actx.to_numpy(ranges)
+        except ImportError:
+            return
 
-            for i in range(srcindices.nblocks):
-                isrc = srcindices.block_indices(i)
-                inbr = nbrindices.block_indices(i)
-                iall = np.s_[ranges[i]:ranges[i + 1]]
+        for i in range(srcindices.nblocks):
+            isrc = srcindices.block_indices(i)
+            inbr = nbrindices.block_indices(i)
 
-                pt.figure(figsize=(10, 8))
-                pt.plot(density_nodes[0], density_nodes[1],
-                        'ko', ms=2.0, alpha=0.5)
-                pt.plot(density_nodes[0][srcindices.indices],
-                        density_nodes[1][srcindices.indices],
-                        'o', ms=2.0)
-                pt.plot(density_nodes[0][isrc], density_nodes[1][isrc],
-                        'o', ms=2.0)
-                pt.plot(density_nodes[0][inbr], density_nodes[1][inbr],
-                        'o', ms=2.0)
-                pt.plot(nodes[0][iall], nodes[1][iall],
-                        'x', ms=2.0)
-                pt.xlim([-1.5, 1.5])
-                pt.ylim([-1.5, 1.5])
+            pt.figure(figsize=(10, 10))
+            pt.plot(nodes[0], nodes[1], 'ko', ms=2.0, alpha=0.5)
+            pt.plot(nodes[0, srcindices.indices], nodes[1, srcindices.indices],
+                    'o', ms=2.0)
+            pt.plot(nodes[0, isrc], nodes[1, isrc], 'o', ms=2.0)
+            pt.plot(nodes[0, inbr], nodes[1, inbr], 'o', ms=2.0)
+            pt.axis("equal")
+            pt.xlim([-1.5, 1.5])
+            pt.ylim([-1.5, 1.5])
 
-                filename = "test_area_query_{}d_{:04}.png".format(ambient_dim, i)
-                pt.savefig(filename, dpi=300)
-                pt.clf()
-        elif ambient_dim == 3:
-            from meshmode.discretization.visualization import make_visualizer
-            marker = np.empty(density_discr.ndofs)
+            filename = f"test_area_query_{ambient_dim}d_{i:04}"
+            pt.savefig(filename, dpi=300)
+            pt.clf()
+    elif ambient_dim == 3:
+        from meshmode.discretization.visualization import make_visualizer
+        marker = np.empty(density_discr.ndofs)
 
-            for i in range(srcindices.nblocks):
-                isrc = srcindices.block_indices(i)
-                inbr = nbrindices.block_indices(i)
+        for i in range(srcindices.nblocks):
+            isrc = srcindices.block_indices(i)
+            inbr = nbrindices.block_indices(i)
 
-                marker.fill(0.0)
-                marker[srcindices.indices] = 0.0
-                marker[isrc] = -42.0
-                marker[inbr] = +42.0
+            marker.fill(0.0)
+            marker[srcindices.indices] = 0.0
+            marker[isrc] = -42.0
+            marker[inbr] = +42.0
 
-                from meshmode.dof_array import unflatten
-                marker_dev = unflatten(actx, density_discr, actx.from_numpy(marker))
+            from meshmode.dof_array import unflatten
+            marker_dev = unflatten(actx, density_discr, actx.from_numpy(marker))
 
-                vis = make_visualizer(actx, density_discr, 10)
-                filename = "test_area_query_{}d_{:04}.vtu".format(ambient_dim, i)
-                vis.write_vtk_file(filename, [
-                    ("marker", marker_dev),
-                    ])
+            vis = make_visualizer(actx, density_discr, 10)
+            filename = "test_area_query_{}d_{:04}.vtu".format(ambient_dim, i)
+            vis.write_vtk_file(filename, [
+                ("marker", marker_dev),
+                ])
+
     # }}}
 
 

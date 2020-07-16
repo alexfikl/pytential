@@ -28,7 +28,9 @@ import numpy.linalg as la
 
 from pytools.obj_array import make_obj_array
 from pytools import memoize_method, memoize_in
+
 from sumpy.tools import BlockIndexRanges
+from boxtree.tools import DeviceDataRecord
 
 import loopy as lp
 from loopy.version import MOST_RECENT_LANGUAGE_VERSION
@@ -39,14 +41,25 @@ Proxy Point Generation
 ~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: ProxyGenerator
-.. autofunction:: partition_by_nodes
 
+.. autofunction:: partition_by_nodes
 .. autofunction:: gather_block_neighbor_points
-.. autofunction:: gather_block_interaction_points
+
 """
 
 
 # {{{ point index partitioning
+
+def make_block_index(actx, indices, ranges=None):
+    """Wrap a ``(indices, ranges)`` tuple into a ``BlockIndexRanges``."""
+    if ranges is None:
+        ranges = np.cumsum([0] + [r.size for r in indices])
+        indices = np.hstack(indices)
+
+    return BlockIndexRanges(actx.context,
+            actx.freeze(actx.from_numpy(indices)),
+            actx.freeze(actx.from_numpy(ranges)))
+
 
 def partition_by_nodes(actx, discr,
         tree_kind="adaptive-level-restricted", max_nodes_in_box=None):
@@ -82,31 +95,48 @@ def partition_by_nodes(actx, discr,
                        & box_flags_enum.HAS_CHILDREN == 0).nonzero()
 
         indices = np.empty(len(leaf_boxes), dtype=np.object)
+        ranges = None
+
         for i, ibox in enumerate(leaf_boxes):
             box_start = tree.box_source_starts[ibox]
             box_end = box_start + tree.box_source_counts_cumul[ibox]
             indices[i] = tree.user_source_ids[box_start:box_end]
-
-        ranges = actx.from_numpy(
-                np.cumsum([0] + [box.shape[0] for box in indices])
-                )
-        indices = actx.from_numpy(np.hstack(indices))
     else:
-        indices = actx.from_numpy(np.arange(0, discr.ndofs, dtype=np.int))
-        ranges = actx.from_numpy(np.arange(
-            0,
-            discr.ndofs + 1,
-            max_nodes_in_box, dtype=np.int))
+        indices = np.arange(0, discr.ndofs, dtype=np.int)
+        ranges = np.arange(0, discr.ndofs + 1, max_nodes_in_box, dtype=np.int)
 
-    assert ranges[-1] == discr.ndofs
-
-    return BlockIndexRanges(actx.context,
-        actx.freeze(indices), actx.freeze(ranges))
+    return make_block_index(actx, indices, ranges=ranges)
 
 # }}}
 
 
 # {{{ proxy point generator
+
+class BlockProxyPoints(DeviceDataRecord):
+    """
+    .. attribute:: indices
+
+        A :class:`~sumpy.tools.BlockIndexRanges` describing which proxies
+        belong to which block.
+
+    .. attribute:: points
+
+        A concatenated list of all the proxy points. Can be sliced into
+        using :attr:`indices` (shape ``(dim, nproxies * nblocks)``).
+
+    .. attribute:: centers
+
+        A list of all the proxy ball centers (shape ``(dim, nblocks)``).
+
+    .. attribute:: radii
+
+        A list of all the proxy ball radii (shape ``(nblocks,)``).
+    """
+
+    @property
+    def nproxy(self):
+        return self.points[0].shape[0] // self.indices.nblocks
+
 
 def _generate_unit_sphere(ambient_dim, approx_npoints):
     """Generate uniform points on a unit sphere.
@@ -212,6 +242,8 @@ class ProxyGenerator(object):
     def nproxy(self):
         return self.ref_points.shape[1]
 
+    # {{{ proxy ball kernels
+
     @memoize_method
     def get_kernel(self):
         if self.radius_factor < 1.0:
@@ -281,6 +313,8 @@ class ProxyGenerator(object):
 
         return knl
 
+    # }}}
+
     def __call__(self, actx, source_dd, indices, **kwargs):
         """Generate proxy points for each given range of source points in
         the discretization in *source_dd*.
@@ -302,8 +336,7 @@ class ProxyGenerator(object):
             distance ``pxyradii[i]`` from the range center ``pxycenters[i]``.
         """
 
-        def _affine_map(v, A, b):
-            return np.dot(A, v) + b
+        # {{{ compute proxy centers and radii
 
         from pytential import bind, sym
         source_dd = sym.as_dofdesc(source_dd)
@@ -328,33 +361,51 @@ class ProxyGenerator(object):
             srcranges=indices.ranges, **kwargs)
 
         from pytential.utils import flatten_to_numpy
-        centers = flatten_to_numpy(actx, centers_dev)
+        centers = np.vstack(flatten_to_numpy(actx, centers_dev))
         radii = flatten_to_numpy(actx, radii_dev)
-        proxies = np.empty(indices.nblocks, dtype=np.object)
+
+        # }}}
+
+        # {{{ build proxy points for each block
+
+        def _affine_map(v, A, b):
+            return np.dot(A, v) + b
+
+        nproxy = self.nproxy * indices.nblocks
+        proxies = np.empty((discr.ambient_dim, nproxy), dtype=centers.dtype)
+        pxy_nr_base = 0
+
         for i in range(indices.nblocks):
-            proxies[i] = _affine_map(self.ref_points,
+            bball = _affine_map(self.ref_points,
                     A=(radii[i] * np.eye(self.ambient_dim)),
                     b=centers[:, i].reshape(-1, 1))
 
-        pxyranges = actx.from_numpy(np.arange(
-            0,
-            proxies.shape[0] * proxies[0].shape[1] + 1,
-            proxies[0].shape[1],
-            dtype=indices.ranges.dtype))
+            proxies[:, pxy_nr_base:pxy_nr_base + self.nproxy] = bball
+            pxy_nr_base += self.nproxy
+
         proxies = make_obj_array([
-            actx.freeze(actx.from_numpy(np.hstack([p[idim] for p in proxies])))
-            for idim in range(self.ambient_dim)
+            actx.freeze(p) for p in actx.from_numpy(proxies)
             ])
         centers = make_obj_array([
-            actx.freeze(centers_dev[idim])
-            for idim in range(self.ambient_dim)
+            actx.freeze(c) for c in centers_dev
             ])
+        pxyindices = np.arange(0, nproxy, dtype=indices.indices.dtype)
+        pxyranges = np.arange(0, nproxy + 1, self.nproxy)
 
-        assert pxyranges[-1] == proxies[0].shape[0]
-        return proxies, actx.freeze(pxyranges), centers, actx.freeze(radii_dev)
+        assert proxies[0].size == pxyranges[-1]
+        return BlockProxyPoints(
+                indices=make_block_index(actx, pxyindices, pxyranges),
+                points=proxies,
+                centers=centers,
+                radii=actx.freeze(radii_dev),
+                )
+
+# }}}
 
 
-def gather_block_neighbor_points(actx, discr, indices, pxycenters, pxyradii,
+# {{{ gather_block_neighbor_points
+
+def gather_block_neighbor_points(actx, discr, indices, pxy,
         max_nodes_in_box=None):
     """Generate a set of neighboring points for each range of points in
     *discr*. Neighboring points of a range :math:`i` are defined
@@ -363,8 +414,7 @@ def gather_block_neighbor_points(actx, discr, indices, pxycenters, pxyradii,
 
     :arg discr: a :class:`meshmode.discretization.Discretization`.
     :arg indices: a :class:`sumpy.tools.BlockIndexRanges`.
-    :arg pxycenters: an array containing the center of each proxy ball.
-    :arg pxyradii: an array containing the radius of each proxy ball.
+    :arg pxy: a :class:`BlockProxyPoints`.
 
     :return: a :class:`sumpy.tools.BlockIndexRanges`.
     """
@@ -396,17 +446,14 @@ def gather_block_neighbor_points(actx, discr, indices, pxycenters, pxyradii,
 
     from boxtree.area_query import AreaQueryBuilder
     builder = AreaQueryBuilder(actx.context)
-    query, _ = builder(actx.queue, tree, pxycenters, pxyradii)
+    query, _ = builder(actx.queue, tree, pxy.centers, pxy.radii)
 
     # find nodes inside each proxy ball
     tree = tree.get(actx.queue)
     query = query.get(actx.queue)
 
-    pxycenters = np.vstack([
-        actx.to_numpy(pxycenters[idim])
-        for idim in range(discr.ambient_dim)
-        ])
-    pxyradii = actx.to_numpy(pxyradii)
+    pxycenters = np.vstack([actx.to_numpy(c) for c in pxy.centers])
+    pxyradii = actx.to_numpy(pxy.radii)
 
     nbrindices = np.empty(indices.nblocks, dtype=np.object)
     for iproxy in range(indices.nblocks):
@@ -420,8 +467,7 @@ def gather_block_neighbor_points(actx, discr, indices, pxycenters, pxyradii,
         iend = istart + tree.box_source_counts_cumul[iboxes]
         isources = np.hstack([np.arange(s, e)
                               for s, e in zip(istart, iend)])
-        nodes = np.vstack([tree.sources[idim][isources]
-                           for idim in range(discr.ambient_dim)])
+        nodes = np.vstack([s[isources] for s in tree.sources])
         isources = tree.user_source_ids[isources]
 
         # get nodes inside the ball but outside the current range
@@ -433,118 +479,7 @@ def gather_block_neighbor_points(actx, discr, indices, pxycenters, pxyradii,
 
         nbrindices[iproxy] = indices.indices[isources[mask]]
 
-    nbrranges = actx.from_numpy(np.cumsum([0] + [n.shape[0] for n in nbrindices]))
-    nbrindices = actx.from_numpy(np.hstack(nbrindices))
-
-    return BlockIndexRanges(actx.context,
-            actx.freeze(nbrindices), actx.freeze(nbrranges))
-
-
-def gather_block_interaction_points(actx, places, source_dd, indices,
-        radius_factor=None,
-        approx_nproxy=None,
-        max_nodes_in_box=None):
-    """Generate sets of interaction points for each given range of indices
-    in the *source* discretization. For each input range of indices,
-    the corresponding output range of points is consists of:
-
-    - a set of proxy points (or balls) around the range, which
-      model farfield interactions. These are constructed using
-      :class:`ProxyGenerator`.
-
-    - a set of neighboring points that are inside the proxy balls, but
-      do not belong to the given range, which model nearby interactions.
-      These are constructed with :func:`gather_block_neighbor_points`.
-
-    :arg places: a :class:`~pytential.symbolic.execution.GeometryCollection`.
-    :arg source_dd: geometry in *places* for which to generate the
-        interaction points. This is a
-        :class:`~pytential.symbolic.primitives.DOFDescriptor` describing
-        the exact discretization.
-    :arg indices: a :class:`sumpy.tools.BlockIndexRanges` on the
-        discretization described by *source_dd*.
-
-    :return: a tuple ``(nodes, ranges)``, where each value is a
-        :class:`pyopencl.array.Array`. For a range :math:`i`, we can
-        get the slice using ``nodes[ranges[i]:ranges[i + 1]]``.
-    """
-
-    @memoize_in(places, "concat_proxy_and_neighbors")
-    def knl():
-        loopy_knl = lp.make_kernel([
-            "{[irange, idim]: 0 <= irange < nranges and \
-                              0 <= idim < dim}",
-            "{[ipxy, ingb]: 0 <= ipxy < npxyblock and \
-                            0 <= ingb < nngbblock}"
-            ],
-            """
-            for irange
-                <> pxystart = pxyranges[irange]
-                <> pxyend = pxyranges[irange + 1]
-                <> npxyblock = pxyend - pxystart
-
-                <> ngbstart = nbrranges[irange]
-                <> ngbend = nbrranges[irange + 1]
-                <> nngbblock = ngbend - ngbstart
-
-                <> istart = pxyranges[irange] + nbrranges[irange]
-                nodes[idim, istart + ipxy] = \
-                    proxies[idim, pxystart + ipxy] \
-                    {id_prefix=write_pxy,nosync=write_ngb}
-                nodes[idim, istart + npxyblock + ingb] = \
-                    sources[idim, nbrindices[ngbstart + ingb]] \
-                    {id_prefix=write_ngb,nosync=write_pxy}
-                ranges[irange + 1] = ranges[irange] + npxyblock + nngbblock
-            end
-            """,
-            [
-                lp.GlobalArg("sources", None,
-                    shape=(lpot_source.ambient_dim, "nsources"), dim_tags="sep,C"),
-                lp.GlobalArg("proxies", None,
-                    shape=(lpot_source.ambient_dim, "nproxies"), dim_tags="sep,C"),
-                lp.GlobalArg("nbrindices", None,
-                    shape="nnbrindices"),
-                lp.GlobalArg("nodes", None,
-                    shape=(lpot_source.ambient_dim, "nproxies + nnbrindices")),
-                lp.ValueArg("nsources", np.int),
-                lp.ValueArg("nproxies", np.int),
-                lp.ValueArg("nnbrindices", np.int),
-                "..."
-            ],
-            name="concat_proxy_and_neighbors",
-            default_offset=lp.auto,
-            silenced_warnings="write_race(write_*)",
-            fixed_parameters=dict(dim=lpot_source.ambient_dim),
-            lang_version=MOST_RECENT_LANGUAGE_VERSION)
-
-        loopy_knl = lp.tag_inames(loopy_knl, "idim*:unr")
-        loopy_knl = lp.split_iname(loopy_knl, "irange", 128, outer_tag="g.0")
-
-        return loopy_knl
-
-    lpot_source = places.get_geometry(source_dd.geometry)
-    generator = ProxyGenerator(places,
-            radius_factor=radius_factor,
-            approx_nproxy=approx_nproxy)
-    proxies, pxyranges, pxycenters, pxyradii = \
-            generator(actx, source_dd, indices)
-
-    discr = places.get_discretization(source_dd.geometry, source_dd.discr_stage)
-    neighbors = gather_block_neighbor_points(actx, discr,
-            indices, pxycenters, pxyradii,
-            max_nodes_in_box=max_nodes_in_box)
-
-    from meshmode.dof_array import flatten, thaw
-    ranges = actx.zeros(indices.nblocks + 1, dtype=np.int)
-    _, (nodes, ranges) = knl()(actx.queue,
-            sources=flatten(thaw(actx, discr.nodes())),
-            proxies=proxies,
-            pxyranges=pxyranges,
-            nbrindices=neighbors.indices,
-            nbrranges=neighbors.ranges,
-            ranges=ranges)
-
-    return actx.freeze(nodes), actx.freeze(ranges)
+    return make_block_index(actx, nbrindices)
 
 # }}}
 
