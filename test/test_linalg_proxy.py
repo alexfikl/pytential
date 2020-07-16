@@ -46,6 +46,8 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
+# {{{ plot_partition_indices
+
 def plot_partition_indices(actx, discr, indices, **kwargs):
     try:
         import matplotlib.pyplot as pt
@@ -54,7 +56,7 @@ def plot_partition_indices(actx, discr, indices, **kwargs):
 
     indices = indices.get(actx.queue)
     args = [
-        kwargs.get("tree_kind", "linear").replace("-", "_"),
+        str(kwargs.get("tree_kind", "linear")).replace("-", "_"),
         kwargs.get("discr_stage", "stage1"),
         discr.ambient_dim
         ]
@@ -98,6 +100,8 @@ def plot_partition_indices(actx, discr, indices, **kwargs):
             ("marker", marker)
             ])
 
+# }}}
+
 
 PROXY_TEST_CASES = [
         extra.CurveTestCase(
@@ -109,6 +113,8 @@ PROXY_TEST_CASES = [
             resolutions=[0])
         ]
 
+
+# {{{ test_partition_points
 
 @pytest.mark.skip(reason="only useful with visualize=True")
 @pytest.mark.parametrize("tree_kind", ['adaptive', None])
@@ -136,6 +142,10 @@ def test_partition_points(ctx_factory, tree_kind, case, visualize=False):
 
     # }}}
 
+# }}}
+
+
+# {{{ test_proxy_generator
 
 @pytest.mark.parametrize("case", PROXY_TEST_CASES)
 @pytest.mark.parametrize("index_sparsity_factor", [1.0, 0.6])
@@ -256,6 +266,10 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
 
     # }}}
 
+# }}}
+
+
+# {{{ test_neighbor_points
 
 @pytest.mark.parametrize("case", PROXY_TEST_CASES)
 @pytest.mark.parametrize("index_sparsity_factor", [1.0, 0.6])
@@ -360,6 +374,107 @@ def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=Fal
                 ])
 
     # }}}
+
+# }}}
+
+
+# {{{ test_skeletonize_by_proxy
+
+@pytest.mark.parametrize("case", PROXY_TEST_CASES)
+def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
+    """Test single-level level skeletonization accuracy."""
+
+    ctx = ctx_factory()
+    queue = cl.CommandQueue(ctx)
+    actx = PyOpenCLArrayContext(queue)
+
+    case = case.copy(nblocks=6, op_type="scalar")
+    logger.info("\n%s", case)
+
+    # {{{ geometry
+
+    dd = sym.DOFDescriptor(case.name, discr_stage=case.skel_discr_stage)
+    qbx = case.get_layer_potential(ctx, case.resolutions[0], case.target_order)
+    places = GeometryCollection(qbx, auto_where=dd)
+
+    density_discr = places.get_discretization(dd.geometry, dd.discr_stage)
+    srcindices = case.get_block_indices(actx, density_discr)
+
+    logger.info("nblocks %3d ndofs %7d", srcindices.nblocks, density_discr.ndofs)
+
+    # }}}
+
+    # {{{ wranglers
+
+    from pytential.linalg.proxy import ProxyGenerator
+    from pytential.linalg.skeletonization import make_block_evaluation_wrangler
+    proxy = ProxyGenerator(places,
+            radius_factor=case.proxy_radius_factor,
+            approx_nproxy=case.proxy_approx_count)
+
+    sym_u, sym_op = case.get_operator(places.ambient_dim)
+    wrangler = make_block_evaluation_wrangler(places, sym_op, sym_u,
+            domains=None,
+            context=case.knl_concrete_kwargs,
+            _weighted_farfield=case.weighted_farfield,
+            _farfield_block_builder=case.farfield_block_builder,
+            _nearfield_block_builder=case.nearfield_block_builder)
+
+    # }}}
+
+    # {{{ check skeletonize
+
+    # dense matrix
+    from pytential.symbolic.execution import build_matrix
+    mat = actx.to_numpy(
+            build_matrix(actx, places, sym_op, sym_u,
+                context=case.knl_concrete_kwargs)
+            )
+
+    # skeleton
+    from pytential.linalg.skeletonize import skeletonize_by_proxy
+    skeleton = skeletonize_by_proxy(actx,
+            places, proxy, wrangler, srcindices,
+            id_eps=case.id_eps,
+            max_particles_in_box=case.max_particles_in_box)
+
+    err_l, err_r, err_f = extra.skeletonization_error(mat, skeleton, srcindices)
+
+    # }}}
+
+    # {{{ visualize
+
+    if not visualize
+        return
+
+    def plot_skeleton(isrc, iskl, name):
+        pt.figure(figsize=(10, 10), dpi=300)
+        pt.plot(sources[0][isrc.indices], sources[1][isrc.indices],
+                'ko', alpha=0.5)
+
+        for i in range(blkindices.nblocks):
+            iblk = iskl.block_indices(i)
+            pt.plot(sources[0][iblk], sources[1][iblk], 'o')
+
+        pt.savefig(f"test_skeletonize_by_proxy_{name}")
+        pt.clf()
+
+    if places.ambient_dim == 2:
+        sources = flatten_to_numpy(actx, density_discr.nodes())
+        srcindices = srcindices.get(queue)
+        sklindices = sklindices.get(queue)
+
+        plot_skeleton(srcindices.col, sklindices.col, "sources")
+        plot_skeleton(srcindices.row, sklindices.row, "targets")
+    else:
+        # TODO: would be nice to figure out a way to visualize some of these
+        # skeletonization results in 3D. Probably need to teach the
+        # visualizers to spit out point clouds
+        pass
+
+    # }}}
+
+# }}}
 
 
 if __name__ == "__main__":

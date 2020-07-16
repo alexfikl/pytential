@@ -21,23 +21,106 @@ def max_block_error(mat, blk, index_set, p=None):
 
     return error
 
+
+def skeletonization_error(mat, skel, srcindices, p=None):
+    r"""Matrix errors are computed as follows:
+
+        .. math::
+
+            \begin{aligned}
+            \epsilon_{l, ij} = \max_{i \ne j} \|A_{ij} - L_{ii} S_{ij}\|_p, \\
+            \epsilon_{r, ij} = \max_{i \ne j} \|A_{ij} - S_{ij} R_{jj}\|_p, \\
+            \epsilon_f = \|A - L S R\|_p.
+            \end{aligned}
+
+    :arg mat: dense matrix.
+    :arg skel: a :class:`~pytential.linalg.skeletonization.SkeletonizedBlock`.
+    :arg p: norm type (follows :func:`~numpy.linalg.norm` rules for matrices).
+
+    :returns: a tuple ``(err_l, err_r, err_f)`` of the left, right and full
+        matrix errors.
+    """
+    from itertools import product
+
+    L = skel.L
+    R = skel.R
+    sklindices = skel.sklindices
+
+    def mnorm(x, y):
+        return la.norm(x - y, ord=p) / la.norm(x, ord=p)
+
+    # build block matrices
+    nblocks = srcindices.nblocks
+    S = np.full((nblocks, nblocks), 0, dtype=np.object)
+    A = np.full((nblocks, nblocks), 0, dtype=np.object)
+
+    def block_indices(blk, i):
+        return blk.indices[blk.ranges[i]:blk.ranges[i + 1]]
+
+    # compute max block error
+    err_l = np.empty((nblocks, nblocks))
+    err_l = np.empty((nblocks, nblocks))
+    for i, j in product(range(nblocks), repeat=2):
+        if i == j:
+            continue
+
+        # full matrix indices
+        f_tgt = block_indices(srcindices.row, i)
+        f_src = block_indices(srcindices.col, j)
+        # skeleton matrix indices
+        s_tgt = block_indices(sklindices.row, i)
+        s_src = block_indices(sklindices.col, j)
+
+        S[i, j] = mat[np.ix_(s_tgt, s_src)]
+        A[i, j] = mat[np.ix_(f_tgt, f_src)]
+
+        blk = mat[np.ix_(s_tgt, f_src)]
+        err_l[i, j] = mnorm(A[i, j], L[i, i].dot(blk))
+
+        blk = mat[np.ix_(f_tgt, s_src)]
+        err_r[i, j] = mnorm(A[i, j], blk.dot(R[j, j]))
+
+    # compute full matrix error
+    from pytential.symbolic.execution import _bmat
+    A = _bmat(A, dtype=mat.dtype)
+    L = _bmat(L, dtype=mat.dtype)
+    S = _bmat(S, dtype=mat.dtype)
+    R = _bmat(R, dtype=mat.dtype)
+
+    assert L.shape == (A.shape[0], S.shape[0])
+    assert R.shape == (S.shape[1], A.shape[1])
+    err_f = mnorm(A, L.dot(S.dot(R)))
+
+    return err_l, err_r, err_f
+
 # }}}
 
 
 # {{{ MatrixTestCase
 
 class MatrixTestCaseMixin:
+    # operators
+    op_type = "scalar"
+    # disable fmm for matrix tests
+    fmm_backend = None
+
     # partitioning
     approx_block_count = 10
     max_particles_in_box = None
     tree_kind = "adaptive-level-restricted"
     index_sparsity_factor = 1.0
 
-    # operators
-    op_type = "scalar"
+    # proxy
+    proxy_radius_factor = None
+    proxy_approx_count = None
 
-    # disable fmm for matrix tests
-    fmm_backend = None
+    # skeletonization
+    id_eps = 1.0e-8
+    skel_discr_stage = sym.QBX_SOURCE_STAGE2
+
+    weighted_farfield = None
+    farfield_block_builder = None
+    nearfield_block_builder = None
 
     def get_block_indices(self, actx, discr, matrix_indices=True):
         max_particles_in_box = self.max_particles_in_box

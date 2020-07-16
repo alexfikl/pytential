@@ -185,7 +185,6 @@ class BlockEvaluationWrangler:
         dep_source = places.get_geometry(domain.geometry)
         dep_discr = places.get_discretization(domain.geometry, domain.discr_stage)
 
-        expr = prepare_expr(places, expr, auto_where=auto_where)
         builder = builder_cls(actx,
                 dep_expr=self.input_exprs[idomain],
                 other_dep_exprs=(
@@ -202,6 +201,7 @@ class BlockEvaluationWrangler:
 
     def evaluate_source_farfield(self,
             actx, places, ibrow, ibcol, index_set, auto_where=None):
+        expr = prepare_expr(places, expr, auto_where=auto_where)
         return self._evaluate(actx, places,
                 self.farfield_block_builder,
                 expr, ibcol, index_set, auto_where,
@@ -210,6 +210,7 @@ class BlockEvaluationWrangler:
 
     def evaluate_target_farfield(self,
             actx, places, ibrow, ibcol, index_set, auto_where=None):
+        expr = prepare_expr(places, expr, auto_where=auto_where)
         return self._evaluate(actx, places,
                 self.farfield_block_builder,
                 expr, ibcol, index_set, auto_where,
@@ -221,6 +222,38 @@ class BlockEvaluationWrangler:
         return self._evaluate(actx, places,
                 self.nearfield_block_builder,
                 self.exprs[ibrow], ibcol, index_set, auto_where)
+
+
+def make_block_evaluation_wrangler(places, exprs, input_exprs,
+        domains=None, context=None,
+        _weighted_farfield=None,
+        _farfield_block_builder=None,
+        _nearfield_block_builder=None):
+
+    if not is_obj_array(exprs):
+        exprs = make_obj_array([exprs])
+
+    try:
+        input_exprs = list(input_exprs)
+    except TypeError:
+        input_exprs = [input_exprs]
+
+    from pytential.symbolic.execution import _prepare_auto_where
+    auto_where = _prepare_auto_where(auto_where, places)
+    from pytential.symbolic.execution import _prepare_domains
+    domains = _prepare_domains(len(input_exprs), places, domains, auto_where[0])
+
+    if context is None:
+        context = {}
+
+    return BlockEvaluationWrangler(
+            exprs=exprs,
+            input_exprs=input_exprs,
+            domains=domains,
+            context=context,
+            weighted_farfield=_weighted_farfield,
+            farfield_block_builder=_farfield_block_builder,
+            nearfield_block_builder=_nearfield_block_builder)
 
 # }}}
 

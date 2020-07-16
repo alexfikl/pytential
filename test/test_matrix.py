@@ -113,7 +113,8 @@ def test_build_matrix(ctx_factory, k, curve_fn, op_type, visualize=False):
     from pytential.symbolic.execution import build_matrix
     mat = actx.to_numpy(
             build_matrix(actx, places, sym_op, sym_u,
-            context=case.knl_concrete_kwargs))
+                context=case.knl_concrete_kwargs)
+            )
 
     if visualize:
         try:
