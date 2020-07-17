@@ -388,13 +388,13 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
     queue = cl.CommandQueue(ctx)
     actx = PyOpenCLArrayContext(queue)
 
-    case = case.copy(nblocks=6, op_type="scalar")
+    case = case.copy(approx_block_count=6, op_type="scalar")
     logger.info("\n%s", case)
 
     # {{{ geometry
 
     dd = sym.DOFDescriptor(case.name, discr_stage=case.skel_discr_stage)
-    qbx = case.get_layer_potential(ctx, case.resolutions[0], case.target_order)
+    qbx = case.get_layer_potential(actx, case.resolutions[0], case.target_order)
     places = GeometryCollection(qbx, auto_where=dd)
 
     density_discr = places.get_discretization(dd.geometry, dd.discr_stage)
@@ -432,7 +432,7 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
             )
 
     # skeleton
-    from pytential.linalg.skeletonize import skeletonize_by_proxy
+    from pytential.linalg.skeletonization import skeletonize_by_proxy
     skeleton = skeletonize_by_proxy(actx,
             places, proxy, wrangler, srcindices,
             id_eps=case.id_eps,
@@ -444,7 +444,7 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
 
     # {{{ visualize
 
-    if not visualize
+    if not visualize:
         return
 
     def plot_skeleton(isrc, iskl, name):

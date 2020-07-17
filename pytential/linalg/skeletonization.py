@@ -33,6 +33,7 @@ from pytools.obj_array import make_obj_array
 from pytools import Record
 
 from sumpy.tools import MatrixBlockIndexRanges, BlockIndexRanges
+from pytential.symbolic.mappers import IdentityMapper, LocationTagger
 
 
 # {{{ helpers
@@ -96,22 +97,17 @@ class QBXForcedLimitReplacer(IdentityMapper):
         return expr.copy(qbx_forced_limit=self.qbx_forced_limit)
 
 
-class DOFDescReplacer(ToTargetTagger):
+class LocationReplacer(LocationTagger):
     def _default_dofdesc(self, dofdesc):
         return self.default_where
 
 
-def prepare_expr(places, expr, auto_where=None, qbx_forced_limit=None):
-    from pytential.symbolic.execution import _prepare_auto_where
-    auto_where = _prepare_auto_where(auto_where, places=places)
-
-    from pytential.symbolic.execution import _prepare_expr
-    expr = _prepare_expr(places, expr, auto_where=auto_where)
-
-    expr = QBXForcedLimitReplacer(qbx_forced_limit)(expr)
-    expr = DOFDescReplacer(auto_where[0], auto_where[1])(expr)
-
-    return expr
+class DOFDescriptorReplacer(LocationReplacer):
+    def __init__(self, default_source, default_target):
+        super(DOFDescriptorReplacer, self).__init__(
+                default_target, default_source=default_source)
+        self.operand_rec = LocationReplacer(
+                default_source, default_source=default_source)
 
 
 class BlockEvaluationWrangler:
@@ -179,6 +175,15 @@ class BlockEvaluationWrangler:
             from pytential.symbolic.matrix import FarFieldBlockBuilder
             self.farfield_block_builder = FarFieldBlockBuilder
 
+    def _prepare_farfield_expr(self, places, expr, auto_where=None):
+        from pytential.symbolic.execution import _prepare_auto_where
+        auto_where = _prepare_auto_where(auto_where, places=places)
+
+        expr = QBXForcedLimitReplacer(None)(expr)
+        expr = DOFDescriptorReplacer(auto_where[0], auto_where[1])(expr)
+
+        return expr
+
     def _evaluate(self, actx, places, builder_cls,
             expr, idomain, index_set, auto_where, **kwargs):
         domain = self.domains[idomain]
@@ -201,7 +206,9 @@ class BlockEvaluationWrangler:
 
     def evaluate_source_farfield(self,
             actx, places, ibrow, ibcol, index_set, auto_where=None):
-        expr = prepare_expr(places, expr, auto_where=auto_where)
+        expr = self._prepare_farfield_expr(
+                places, self.exprs[ibrow], auto_where=auto_where)
+
         return self._evaluate(actx, places,
                 self.farfield_block_builder,
                 expr, ibcol, index_set, auto_where,
@@ -210,7 +217,9 @@ class BlockEvaluationWrangler:
 
     def evaluate_target_farfield(self,
             actx, places, ibrow, ibcol, index_set, auto_where=None):
-        expr = prepare_expr(places, expr, auto_where=auto_where)
+        expr = self._prepare_farfield_expr(
+                places, self.exprs[ibrow], auto_where=auto_where)
+
         return self._evaluate(actx, places,
                 self.farfield_block_builder,
                 expr, ibcol, index_set, auto_where,
@@ -224,13 +233,19 @@ class BlockEvaluationWrangler:
                 self.exprs[ibrow], ibcol, index_set, auto_where)
 
 
+
 def make_block_evaluation_wrangler(places, exprs, input_exprs,
-        domains=None, context=None,
+        domains=None, context=None, auto_where=None,
         _weighted_farfield=None,
         _farfield_block_builder=None,
         _nearfield_block_builder=None):
 
-    if not is_obj_array(exprs):
+    from pytential.symbolic.execution import _prepare_auto_where
+    auto_where = _prepare_auto_where(auto_where, places)
+    from pytential.symbolic.execution import _prepare_expr
+    exprs = _prepare_expr(places, exprs, auto_where=auto_where)
+
+    if not (isinstance(exprs, np.ndarray) and exprs.dtype.char == "O"):
         exprs = make_obj_array([exprs])
 
     try:
@@ -238,8 +253,6 @@ def make_block_evaluation_wrangler(places, exprs, input_exprs,
     except TypeError:
         input_exprs = [input_exprs]
 
-    from pytential.symbolic.execution import _prepare_auto_where
-    auto_where = _prepare_auto_where(auto_where, places)
     from pytential.symbolic.execution import _prepare_domains
     domains = _prepare_domains(len(input_exprs), places, domains, auto_where[0])
 
@@ -262,11 +275,12 @@ def make_block_evaluation_wrangler(places, exprs, input_exprs,
 
 @contextmanager
 def add_to_geometry_collection(places, proxy):
-    # NOTE: this is a bit of a hack to keep all the caches in `places` and
+    # NOTE: this is a giant hack to keep all the caches in `places` and
     # just add the proxy points to it, since otherwise all the DISCRETIZATION
     # scope stuff would be recomputed all the time
 
     try:
+        # NOTE: this needs to match `EvaluationMapper.map_common_subexpression`
         previous_cse_cache = places._get_cache("cse")
         places.places["proxy"] = proxy
         yield places
@@ -274,14 +288,15 @@ def add_to_geometry_collection(places, proxy):
         del places.places["proxy"]
         # NOTE: this is meant to make sure that proxy-related things don't
         # get cached over multiple runs and lead to some explosion of some sort
-        places.cache["cse"] = previous_cse_cache
+        places.caches["cse"] = previous_cse_cache
 
 
-def make_block_proxy_skeleton(actx, places, proxy, wrangler, indices,
+def make_block_proxy_skeleton(actx, places, proxy_generator, wrangler, indices,
         ibrow, ibcol, source_or_target,
         max_particles_in_box=None):
-    """Builds a block matrix that can be used to skeletonize the rows
-    (targets) of the symbolic matrix block described by ``(ibrow, ibcol)``.
+    """Builds a block matrix that can be used to skeletonize the
+    rows (targets) or columns (sources) of the symbolic matrix block
+    described by ``(ibrow, ibcol)``.
     """
 
     if source_or_target == "source":
@@ -289,11 +304,13 @@ def make_block_proxy_skeleton(actx, places, proxy, wrangler, indices,
 
         swap_arg_order = lambda x, y: (x, y)
         evaluate_farfield = wrangler.evaluate_source_farfield
+        block_stack = np.vstack
     elif source_or_target == "target":
         from pytential.source import PointPotentialSource as ProxyPoints
 
         swap_arg_order = lambda x, y: (y, x)
         evaluate_farfield = wrangler.evaluate_target_farfield
+        block_stack = np.hstack
     else:
         raise ValueError(f"unknown value: '{source_or_target}'")
 
@@ -303,26 +320,28 @@ def make_block_proxy_skeleton(actx, places, proxy, wrangler, indices,
     dep_source = places.get_geometry(domain.geometry)
     dep_discr = places.get_discretization(domain.geometry, domain.discr_stage)
 
-    pxy = proxy(actx, domain, indices)
+    pxy = proxy_generator(actx, domain, indices)
 
     # }}}
 
     # {{{ evaluate (farfield) proxy interactions
 
-    with add_to_geometry_collection(places, ProxyPoints(pxy.points)):
+    with add_to_geometry_collection(places, ProxyPoints(pxy.points)) as pxyplaces:
         pxyindices = MatrixBlockIndexRanges(actx.context,
                 *swap_arg_order(pxy.indices, indices))
         pxymat = evaluate_farfield(actx, pxyplaces, ibrow, ibcol, pxyindices,
                 auto_where=swap_arg_order(domain, "proxy"))
 
     if indices.nblocks == 1:
-        # TODO: evaluate nearfield at the root level?
+        # NOTE: this doesn't really happen, because this function only gets
+        # called by skeletonize_block_by_proxy, which already takes care of it
         return make_block_diag(pxymat, pxyindices.get(actx.queue))
 
     # }}}
 
     # {{{ evaluate (nearfield) neighbor interactions
 
+    from pytential.linalg.proxy import gather_block_neighbor_points
     nbrindices = gather_block_neighbor_points(
             actx, dep_discr, indices, pxy,
             max_particles_in_box=max_particles_in_box)
@@ -335,13 +354,13 @@ def make_block_proxy_skeleton(actx, places, proxy, wrangler, indices,
 
     # {{{ concatenate everything to get the blocks ready for ID-ing
 
-    pxyindices = pxyindices.get(queue)
-    nbrindices = nbrindices.get(queue)
+    pxyindices = pxyindices.get(actx.queue)
+    nbrindices = nbrindices.get(actx.queue)
 
     pxyblk = np.full((indices.nblocks, indices.nblocks), 0, dtype=np.object)
     for i in range(indices.nblocks):
-        pxyblk[i, i] = np.hstack(swap_arg_order(
-            pxyindices.block_take(pxymat, i)
+        pxyblk[i, i] = block_stack(swap_arg_order(
+            pxyindices.block_take(pxymat, i),
             nbrindices.block_take(nbrmat, i),
             ))
     # }}}
@@ -350,12 +369,70 @@ def make_block_proxy_skeleton(actx, places, proxy, wrangler, indices,
 
 
 def skeletonize_block_by_proxy(actx,
-        ibcol, ibrow, places, proxy, wrangler, blkindices,
+        ibcol, ibrow, places, proxy_generator, wrangler, blkindices,
         id_eps=None, id_rank=None,
-        tree_max_particles_in_box=None):
+        max_particles_in_box=None):
+    L = np.full((blkindices.nblocks, blkindices.nblocks), 0, dtype=np.object)
+    R = np.full((blkindices.nblocks, blkindices.nblocks), 0, dtype=np.object)
+
+    if blkindices.nblocks == 1:
+        L[0, 0] = np.eye(blkindices.row.indices.size)
+        R[0, 0] = np.eye(blkindices.col.indices.size)
+
+        return L, R, blkindices
+
+    # construct proxy matrices to skeletonize
+    src_mat = make_block_proxy_skeleton(actx,
+            places, proxy_generator, wrangler, blkindices.col,
+            ibrow, ibcol, "source",
+            max_particles_in_box=max_particles_in_box)
+    tgt_mat = make_block_proxy_skeleton(actx,
+            places, proxy_generator, wrangler, blkindices.row,
+            ibrow, ibcol, "target",
+            max_particles_in_box=max_particles_in_box)
+
+    src_skl_indices = np.empty(blkindices.nblocks, dtype=np.object)
+    tgt_skl_indices = np.empty(blkindices.nblocks, dtype=np.object)
+    skl_ranges = np.zeros(blkindices.nblocks + 1, dtype=np.int)
+
+    src_indices = blkindices.col.get(actx.queue)
+    tgt_indices = blkindices.row.get(actx.queue)
+
+    for i in range(blkindices.nblocks):
+        k = id_rank
+
+        # skeletonize target points
+        k, idx, interp = interp_decomp(tgt_mat[i, i].T, k, id_eps)
+        assert k > 0
+
+        L[i, i] = interp.T
+        tgt_skl_indices[i] = tgt_indices.block_indices(i)[idx[:k]]
+
+        # skeletonize source points
+        k, idx, interp = interp_decomp(src_mat[i, i], k, id_eps)
+        assert k > 0
+
+        R[i, i] = interp
+        src_skl_indices[i] = src_indices.block_indices(i)[idx[:k]]
+
+        skl_ranges[i + 1] = skl_ranges[i] + k
+        assert R[i, i].shape == (k, src_mat[i, i].shape[1])
+        assert L[i, i].shape == (tgt_mat[i, i].shape[0], k)
+
+    from pytential.linalg.proxy import make_block_index
+    src_skl_indices = make_block_index(actx, np.hstack(src_skl_indices), skl_ranges)
+    tgt_skl_indices = make_block_index(actx, np.hstack(tgt_skl_indices), skl_ranges)
+    skl_indices = MatrixBlockIndexRanges(actx.context,
+            tgt_skl_indices, src_skl_indices)
+
+    return SkeletonizedBlock(L=L, R=R, sklindices=skl_indices)
+
+
+def skeletonize_by_proxy(actx, places, proxy_generator, wrangler, blkindices,
+        id_eps=None, id_rank=None, max_particles_in_box=None):
     r"""
     :arg places: a :class:`~meshmode.array_context.ArrayContext`.
-    :arg proxy: a :class:`~pytential.linalg.proxy.ProxyGenerator`.
+    :arg proxy_generator: a :class:`~pytential.linalg.proxy.ProxyGenerator`.
     :arg wrangler: a :class:`BlockEvaluationWrangler`.
     :arg blkindices: a :class:`~sumpy.tools.MatrixBlockIndexRanges`.
 
@@ -367,77 +444,14 @@ def skeletonize_block_by_proxy(actx,
         ``blkindices`` after compression.
     """
 
-    L = np.full((blkindices.nblocks, blkindices.nblocks), 0, dtype=np.object)
-    R = np.full((blkindices.nblocks, blkindices.nblocks), 0, dtype=np.object)
-
-    if blkindices.nblocks == 1:
-        L[0, 0] = np.eye(blkindices.row.indices.size)
-        R[0, 0] = np.eye(blkindices.col.indices.size)
-
-        return L, R, blkindices
-
-    # construct proxy matrices to skeletonize
-    src_mat = build_source_skeleton_matrix(queue,
-            places, proxy, wrangler, blkindices.col, 0, 0,
-            max_particles_in_box=tree_max_particles_in_box)
-    tgt_mat = build_target_skeleton_matrix(queue,
-            places, proxy, wrangler, blkindices.row, 0, 0,
-            max_particles_in_box=tree_max_particles_in_box)
-
-    src_skl_indices = np.empty(blkindices.nblocks, dtype=np.object)
-    tgt_skl_indices = np.empty(blkindices.nblocks, dtype=np.object)
-    skl_ranges = np.zeros(blkindices.nblocks + 1, dtype=np.int)
-
-    src_indices = blkindices.col.get(queue)
-    tgt_indices = blkindices.row.get(queue)
-
-    for i in range(blkindices.nblocks):
-        k = id_rank
-
-        assert not np.any(np.isnan(src_mat[i, i])), "block {}".format(i)
-        assert not np.any(np.isinf(src_mat[i, i])), "block {}".format(i)
-        assert not np.any(np.isnan(tgt_mat[i, i])), "block {}".format(i)
-        assert not np.any(np.isinf(tgt_mat[i, i])), "block {}".format(i)
-
-        # skeletonize target points
-        k, idx, interp = _interp_decomp(tgt_mat[i, i].T, k, id_eps)
-        assert k > 0
-
-        L[i, i] = interp.T
-        tgt_skl_indices[i] = tgt_indices.block_indices(i)[idx[:k]]
-
-        # skeletonize source points
-        k, idx, interp = _interp_decomp(src_mat[i, i], k, id_eps)
-        assert k > 0
-
-        R[i, i] = interp
-        src_skl_indices[i] = src_indices.block_indices(i)[idx[:k]]
-
-        skl_ranges[i + 1] = skl_ranges[i] + k
-        assert R[i, i].shape == (k, src_mat[i, i].shape[1])
-        assert L[i, i].shape == (tgt_mat[i, i].shape[0], k)
-
-    src_skl_indices = _to_block_index(queue, src_skl_indices, skl_ranges)
-    tgt_skl_indices = _to_block_index(queue, tgt_skl_indices, skl_ranges)
-    skl_indices = MatrixBlockIndexRanges(queue.context,
-                                         tgt_skl_indices,
-                                         src_skl_indices)
-
-    return L, R, skl_indices
-
-
-def skeletonize_by_proxy(actx, places, proxy, wrangler, blkindices,
-        id_eps=None, id_rank=None,
-        max_particles_in_box=None):
-
     nrows = len(wrangler.exprs)
     ncols = len(wrangler.input_exprs)
     skel = np.empty((nrows, ncols), dtype=np.object)
 
     for ibrow in range(nrows):
-        for ibcol in range(ncols)
+        for ibcol in range(ncols):
             skel[ibrow, ibcol] = skeletonize_block_by_proxy(actx,
-                    ibrow, ibcol, proxy, wrangler, blkindices,
+                    ibrow, ibcol, places, proxy_generator, wrangler, blkindices,
                     id_eps=id_eps, id_rank=id_rank,
                     max_particles_in_box=max_particles_in_box)
 

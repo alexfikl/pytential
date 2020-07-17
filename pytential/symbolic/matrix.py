@@ -414,11 +414,13 @@ class MatrixBuilder(MatrixBuilderBase):
 
 class P2PMatrixBuilder(MatrixBuilderBase):
     def __init__(self, actx, dep_expr, other_dep_exprs,
-            dep_source, dep_discr, places, context, exclude_self=True):
+            dep_source, dep_discr, places, context,
+            weightd=False, exclude_self=False):
         super(P2PMatrixBuilder, self).__init__(actx,
                 dep_expr, other_dep_exprs, dep_source, dep_discr,
                 places, context)
 
+        self.weighted = weighted
         self.exclude_self = exclude_self
 
     def map_int_g(self, expr):
@@ -459,8 +461,17 @@ class P2PMatrixBuilder(MatrixBuilderBase):
                 targets=flatten(thaw(actx, target_discr.nodes())),
                 sources=flatten(thaw(actx, source_discr.nodes())),
                 **kernel_args)
+        mat = actx.to_numpy(mat)
 
-        return actx.to_numpy(mat).dot(rec_density)
+        if self.weighted:
+            from pytential import bind, sym
+            waa = bind(self.places, sym.weights_and_area_elements(
+                source_discr.ambient_dim,
+                dofdesc=expr.source))(self.array_context)
+
+            mat[:, :] *= actx.to_numpy(flatten(waa))
+
+        return mat.dot(rec_density)
 
 # }}}
 
@@ -530,18 +541,22 @@ class NearFieldBlockBuilder(MatrixBlockBuilderBase):
         waa = bind(self.places, sym.weights_and_area_elements(
             source_discr.ambient_dim,
             dofdesc=expr.source))(actx)
-        waa = flatten(waa)
 
+        waa = flatten(waa)
         mat *= waa[self.index_set.linear_col_indices]
-        return rec_density * actx.to_numpy(mat)
+
+        return actx.to_numpy(mat) * rec_density
 
 
 class FarFieldBlockBuilder(MatrixBlockBuilderBase):
     def __init__(self, queue, dep_expr, other_dep_exprs, dep_source, dep_discr,
-            places, index_set, context, exclude_self=False):
+            places, index_set, context,
+            weighted=False, exclude_self=False):
         super(FarFieldBlockBuilder, self).__init__(queue,
                 dep_expr, other_dep_exprs, dep_source, dep_discr,
                 places, index_set, context)
+
+        self.weighted = weighted
         self.exclude_self = exclude_self
 
     def get_dep_variable(self):
@@ -593,7 +608,16 @@ class FarFieldBlockBuilder(MatrixBlockBuilderBase):
                 index_set=self.index_set,
                 **kernel_args)
 
-        return rec_density * actx.to_numpy(mat)
+        if self.weighted:
+            from pytential import bind, sym
+            waa = bind(self.places, sym.weights_and_area_elements(
+                source_discr.ambient_dim,
+                dofdesc=expr.source))(actx)
+
+            waa = flatten(waa)
+            mat *= waa[self.index_set.linear_col_indices]
+
+        return actx.to_numpy(mat) * rec_density
 
 # }}}
 
