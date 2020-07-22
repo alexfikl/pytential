@@ -31,9 +31,10 @@ import pyopencl as cl
 
 from pytential import bind, sym
 from pytential import GeometryCollection
+from pytential.utils import flatten_to_numpy
 
 from meshmode.array_context import PyOpenCLArrayContext
-from meshmode.mesh.generation import ellipse
+from meshmode.mesh.generation import ellipse, NArmedStarfish
 
 import pytest
 from pyopencl.tools import (  # noqa
@@ -66,7 +67,6 @@ def plot_partition_indices(actx, discr, indices, **kwargs):
     pt.savefig("test_partition_{1}_{3}d_ranges_{2}.png".format(*args))
     pt.clf()
 
-    from pytential.utils import flatten_to_numpy
     if discr.ambient_dim == 2:
         sources = flatten_to_numpy(actx, discr.nodes())
 
@@ -108,6 +108,11 @@ PROXY_TEST_CASES = [
             name="ellipse",
             target_order=7,
             curve_fn=partial(ellipse, 3.0)),
+        extra.CurveTestCase(
+            name="starfish",
+            target_order=4,
+            curve_fn=NArmedStarfish(5, 0.25),
+            resolutions=[32]),
         extra.TorusTestCase(
             target_order=2,
             resolutions=[0])
@@ -172,7 +177,6 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
     from pytential.linalg.proxy import ProxyGenerator
     proxies = ProxyGenerator(places)(actx, places.auto_source, srcindices)
 
-    from pytential.utils import flatten_to_numpy
     proxies = proxies.get(queue)
     pxypoints = np.vstack(proxies.points)
     pxycenters = np.vstack(proxies.centers)
@@ -305,7 +309,6 @@ def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=Fal
     srcindices = srcindices.get(queue)
     nbrindices = nbrindices.get(queue)
 
-    from pytential.utils import flatten_to_numpy
     proxies = proxies.get(queue)
     pxypoints = np.vstack(proxies.points)
     pxycenters = np.vstack(proxies.centers)
@@ -408,7 +411,7 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
 
     from pytential.linalg.proxy import ProxyGenerator
     from pytential.linalg.skeletonization import make_block_evaluation_wrangler
-    proxy = ProxyGenerator(places,
+    proxy_generator = ProxyGenerator(places,
             radius_factor=case.proxy_radius_factor,
             approx_nproxy=case.proxy_approx_count)
 
@@ -432,13 +435,24 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
             )
 
     # skeleton
-    from pytential.linalg.skeletonization import skeletonize_by_proxy
-    skeleton = skeletonize_by_proxy(actx,
-            places, proxy, wrangler, srcindices,
+    from pytential.linalg.skeletonization import skeletonize_block_by_proxy
+    L, R, sklindices = skeletonize_block_by_proxy(actx, 0, 0,
+            places, proxy_generator, wrangler, srcindices,
             id_eps=case.id_eps,
             max_particles_in_box=case.max_particles_in_box)
 
-    err_l, err_r, err_f = extra.skeletonization_error(mat, skeleton, srcindices)
+    from pytential.linalg.skeletonization import SkeletonizedBlock
+    skeleton = SkeletonizedBlock(L=L, R=R, sklindices=sklindices.get(queue))
+
+    err_l, err_r, err_f = extra.skeletonization_error(
+            mat, skeleton, srcindices.get(queue))
+
+    logger.info("error: L %.5e R %.5e F %.5e",
+            la.norm(err_l, np.inf), la.norm(err_r, np.inf), err_f)
+
+    assert la.norm(err_l, np.inf) < 5.0e+1 * case.id_eps
+    assert la.norm(err_r, np.inf) < 5.0e+1 * case.id_eps
+    assert err_f < 5.0e+1 * case.id_eps
 
     # }}}
 
@@ -447,17 +461,39 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
     if not visualize:
         return
 
+    import matplotlib.pyplot as pt
+    pt.imshow(np.log10(err_l + 1.0e-16))
+    pt.colorbar()
+    pt.savefig("test_skeletonize_by_proxy_err_l")
+    pt.clf()
+
+    pt.imshow(np.log10(err_r + 1.0e-16))
+    pt.colorbar()
+    pt.savefig("test_skeletonize_by_proxy_err_r")
+    pt.clf()
+
     def plot_skeleton(isrc, iskl, name):
         pt.figure(figsize=(10, 10), dpi=300)
         pt.plot(sources[0][isrc.indices], sources[1][isrc.indices],
                 'ko', alpha=0.5)
 
-        for i in range(blkindices.nblocks):
+        ax = pt.gca()
+        for i in range(srcindices.nblocks):
             iblk = iskl.block_indices(i)
             pt.plot(sources[0][iblk], sources[1][iblk], 'o')
 
+            c = pt.Circle(pxycenters[:, i], pxyradii[i], color='k', alpha=0.1)
+            ax.add_artist(c)
+
+        ax.set_aspect("equal")
+        pt.xlim([-1.5, 1.5])
+        pt.ylim([-1.5, 1.5])
         pt.savefig(f"test_skeletonize_by_proxy_{name}")
         pt.clf()
+
+    pxy = proxy_generator(actx, wrangler.domains[0], srcindices.row).get(queue)
+    pxycenters = np.vstack(pxy.centers)
+    pxyradii = pxy.radii
 
     if places.ambient_dim == 2:
         sources = flatten_to_numpy(actx, density_discr.nodes())

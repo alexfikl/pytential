@@ -76,13 +76,6 @@ def make_block_diag(blk, blkindices):
     return diag
 
 
-class SkeletonizedBlock(Record):
-    """
-    .. attribute:: L
-    .. attribute:: R
-    .. attribute:: sklindices
-    """
-
 # }}}
 
 
@@ -100,6 +93,17 @@ class QBXForcedLimitReplacer(IdentityMapper):
 class LocationReplacer(LocationTagger):
     def _default_dofdesc(self, dofdesc):
         return self.default_where
+
+    def map_int_g(self, expr):
+        return type(expr)(
+                expr.kernel,
+                self.operand_rec(expr.density),
+                expr.qbx_forced_limit,
+                self.default_source, self.default_where,
+                kernel_arguments=dict(
+                    (name, self.operand_rec(arg_expr))
+                    for name, arg_expr in expr.kernel_arguments.items()
+                    ))
 
 
 class DOFDescriptorReplacer(LocationReplacer):
@@ -179,7 +183,7 @@ class BlockEvaluationWrangler:
         from pytential.symbolic.execution import _prepare_auto_where
         auto_where = _prepare_auto_where(auto_where, places=places)
 
-        expr = QBXForcedLimitReplacer(None)(expr)
+        expr = QBXForcedLimitReplacer(qbx_forced_limit=None)(expr)
         expr = DOFDescriptorReplacer(auto_where[0], auto_where[1])(expr)
 
         return expr
@@ -271,7 +275,7 @@ def make_block_evaluation_wrangler(places, exprs, input_exprs,
 # }}}
 
 
-# {{{ skeletonize_by_proxy
+# {{{ skeletonize_block_by_proxy
 
 @contextmanager
 def add_to_geometry_collection(places, proxy):
@@ -280,19 +284,26 @@ def add_to_geometry_collection(places, proxy):
     # scope stuff would be recomputed all the time
 
     try:
-        # NOTE: this needs to match `EvaluationMapper.map_common_subexpression`
-        previous_cse_cache = places._get_cache("cse")
-        places.places["proxy"] = proxy
-        yield places
+        pxyplaces = places.merge({"proxy": proxy})
+        yield pxyplaces
     finally:
-        del places.places["proxy"]
-        # NOTE: this is meant to make sure that proxy-related things don't
-        # get cached over multiple runs and lead to some explosion of some sort
-        places.caches["cse"] = previous_cse_cache
+        pass
+
+    # try:
+    #     # NOTE: this needs to match `EvaluationMapper.map_common_subexpression`
+    #     previous_cse_cache = places._get_cache("cse")
+    #     places.places["proxy"] = proxy
+    #     yield places
+    # finally:
+    #     del places.places["proxy"]
+    #     # NOTE: this is meant to make sure that proxy-related things don't
+    #     # get cached over multiple runs and lead to some explosion of some sort
+    #     places.caches["cse"] = previous_cse_cache
 
 
-def make_block_proxy_skeleton(actx, places, proxy_generator, wrangler, indices,
-        ibrow, ibcol, source_or_target,
+def make_block_proxy_skeleton(actx, ibrow, ibcol,
+        places, proxy_generator, wrangler, indices,
+        source_or_target=None,
         max_particles_in_box=None):
     """Builds a block matrix that can be used to skeletonize the
     rows (targets) or columns (sources) of the symbolic matrix block
@@ -382,13 +393,13 @@ def skeletonize_block_by_proxy(actx,
         return L, R, blkindices
 
     # construct proxy matrices to skeletonize
-    src_mat = make_block_proxy_skeleton(actx,
+    src_mat = make_block_proxy_skeleton(actx, ibrow, ibcol,
             places, proxy_generator, wrangler, blkindices.col,
-            ibrow, ibcol, "source",
+            source_or_target="source",
             max_particles_in_box=max_particles_in_box)
-    tgt_mat = make_block_proxy_skeleton(actx,
+    tgt_mat = make_block_proxy_skeleton(actx, ibrow, ibcol,
             places, proxy_generator, wrangler, blkindices.row,
-            ibrow, ibcol, "target",
+            source_or_target="target",
             max_particles_in_box=max_particles_in_box)
 
     src_skl_indices = np.empty(blkindices.nblocks, dtype=np.object)
@@ -402,6 +413,11 @@ def skeletonize_block_by_proxy(actx,
         k = id_rank
 
         # skeletonize target points
+        assert not np.any(np.isinf(tgt_mat[i, i])), \
+                np.where(np.isinf(tgt_mat[i, i]))
+        assert not np.any(np.isnan(tgt_mat[i, i])), \
+                np.where(np.isnan(tgt_mat[i, i]))
+
         k, idx, interp = interp_decomp(tgt_mat[i, i].T, k, id_eps)
         assert k > 0
 
@@ -409,6 +425,11 @@ def skeletonize_block_by_proxy(actx,
         tgt_skl_indices[i] = tgt_indices.block_indices(i)[idx[:k]]
 
         # skeletonize source points
+        assert not np.any(np.isinf(src_mat[i, i])), \
+                np.where(np.isinf(src_mat[i, i]))
+        assert not np.any(np.isnan(src_mat[i, i])), \
+                np.where(np.isnan(src_mat[i, i]))
+
         k, idx, interp = interp_decomp(src_mat[i, i], k, id_eps)
         assert k > 0
 
@@ -425,7 +446,19 @@ def skeletonize_block_by_proxy(actx,
     skl_indices = MatrixBlockIndexRanges(actx.context,
             tgt_skl_indices, src_skl_indices)
 
-    return SkeletonizedBlock(L=L, R=R, sklindices=skl_indices)
+    return L, R, skl_indices
+
+# }}}
+
+
+# {{{ skeletonize_by_proxy
+
+class SkeletonizedBlock(Record):
+    """
+    .. attribute:: L
+    .. attribute:: R
+    .. attribute:: sklindices
+    """
 
 
 def skeletonize_by_proxy(actx, places, proxy_generator, wrangler, blkindices,
@@ -450,10 +483,12 @@ def skeletonize_by_proxy(actx, places, proxy_generator, wrangler, blkindices,
 
     for ibrow in range(nrows):
         for ibcol in range(ncols):
-            skel[ibrow, ibcol] = skeletonize_block_by_proxy(actx,
+            L, R, sklindices = skeletonize_block_by_proxy(actx,
                     ibrow, ibcol, places, proxy_generator, wrangler, blkindices,
                     id_eps=id_eps, id_rank=id_rank,
                     max_particles_in_box=max_particles_in_box)
+
+            skel[ibrow, ibcol] = SkeletonizedBlock(L=L, R=R, sklindices=sklindices)
 
     return skel
 

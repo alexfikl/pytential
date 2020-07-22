@@ -58,8 +58,8 @@ def skeletonization_error(mat, skel, srcindices, p=None):
         return blk.indices[blk.ranges[i]:blk.ranges[i + 1]]
 
     # compute max block error
-    err_l = np.empty((nblocks, nblocks))
-    err_l = np.empty((nblocks, nblocks))
+    err_l = np.zeros((nblocks, nblocks))
+    err_r = np.zeros((nblocks, nblocks))
     for i, j in product(range(nblocks), repeat=2):
         if i == j:
             continue
@@ -82,10 +82,10 @@ def skeletonization_error(mat, skel, srcindices, p=None):
 
     # compute full matrix error
     from pytential.symbolic.execution import _bmat
-    A = _bmat(A, dtype=mat.dtype)
-    L = _bmat(L, dtype=mat.dtype)
-    S = _bmat(S, dtype=mat.dtype)
-    R = _bmat(R, dtype=mat.dtype)
+    A = _bmat(A, dtypes=[mat.dtype])
+    L = _bmat(L, dtypes=[mat.dtype])
+    S = _bmat(S, dtypes=[mat.dtype])
+    R = _bmat(R, dtypes=[mat.dtype])
 
     assert L.shape == (A.shape[0], S.shape[0])
     assert R.shape == (S.shape[1], A.shape[1])

@@ -572,9 +572,6 @@ class FarFieldBlockBuilder(MatrixBlockBuilderBase):
         target_discr = self.places.get_discretization(
                 expr.target.geometry, expr.target.discr_stage)
 
-        if source_discr is not target_discr:
-            raise NotImplementedError
-
         rec_density = self._blk_mapper.rec(expr.density)
         if is_zero(rec_density):
             return 0
@@ -601,10 +598,10 @@ class FarFieldBlockBuilder(MatrixBlockBuilderBase):
         mat_gen = P2PMatrixBlockGenerator(actx.context, (kernel,),
                 exclude_self=self.exclude_self)
 
-        from meshmode.dof_array import flatten, thaw
+        from pytential.utils import flatten_if_needed
         _, (mat,) = mat_gen(actx.queue,
-                targets=flatten(thaw(actx, target_discr.nodes())),
-                sources=flatten(thaw(actx, source_discr.nodes())),
+                targets=flatten_if_needed(actx, target_discr.nodes()),
+                sources=flatten_if_needed(actx, source_discr.nodes()),
                 index_set=self.index_set,
                 **kernel_args)
 
@@ -614,6 +611,7 @@ class FarFieldBlockBuilder(MatrixBlockBuilderBase):
                 source_discr.ambient_dim,
                 dofdesc=expr.source))(actx)
 
+            from meshmode.dof_array import flatten
             waa = flatten(waa)
             mat *= waa[self.index_set.linear_col_indices]
 
