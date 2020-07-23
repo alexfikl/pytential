@@ -384,10 +384,10 @@ class ProxyGenerator(object):
             pxy_nr_base += self.nproxy
 
         proxies = make_obj_array([
-            actx.freeze(p) for p in actx.from_numpy(proxies)
+            actx.freeze(actx.from_numpy(p)) for p in proxies
             ])
         centers = make_obj_array([
-            actx.freeze(c) for c in centers_dev
+            actx.freeze(actx.from_numpy(c)) for c in centers
             ])
         pxyindices = np.arange(0, nproxy, dtype=indices.indices.dtype)
         pxyranges = np.arange(0, nproxy + 1, self.nproxy)
