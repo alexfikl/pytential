@@ -310,7 +310,6 @@ def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=Fal
     nbrindices = nbrindices.get(queue)
 
     proxies = proxies.get(queue)
-    pxypoints = np.vstack(proxies.points)
     pxycenters = np.vstack(proxies.centers)
     nodes = np.vstack(flatten_to_numpy(actx, density_discr.nodes()))
 

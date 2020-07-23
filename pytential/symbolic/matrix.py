@@ -415,7 +415,7 @@ class MatrixBuilder(MatrixBuilderBase):
 class P2PMatrixBuilder(MatrixBuilderBase):
     def __init__(self, actx, dep_expr, other_dep_exprs,
             dep_source, dep_discr, places, context,
-            weightd=False, exclude_self=False):
+            weighted=False, exclude_self=False):
         super(P2PMatrixBuilder, self).__init__(actx,
                 dep_expr, other_dep_exprs, dep_source, dep_discr,
                 places, context)

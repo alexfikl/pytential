@@ -27,7 +27,7 @@ import numpy as np
 import numpy.linalg as la
 
 from pytools.obj_array import make_obj_array
-from pytools import memoize_method, memoize_in
+from pytools import memoize_method
 
 from sumpy.tools import BlockIndexRanges
 from boxtree.tools import DeviceDataRecord

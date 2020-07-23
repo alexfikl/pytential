@@ -25,14 +25,11 @@ THE SOFTWARE.
 from contextlib import contextmanager
 
 import numpy as np
-import numpy.linalg as la
-
-import pyopencl as cl
 
 from pytools.obj_array import make_obj_array
 from pytools import Record
 
-from sumpy.tools import MatrixBlockIndexRanges, BlockIndexRanges
+from sumpy.tools import MatrixBlockIndexRanges
 from pytential.symbolic.mappers import IdentityMapper, LocationTagger
 
 
@@ -126,7 +123,7 @@ class BlockEvaluationWrangler:
             weighted_farfield=None,
             farfield_block_builder=None,
             nearfield_block_builder=None):
-        """
+        r"""
         :arg exprs: an :class:`~numpy.ndarray` of expressions (layer potentials)
             that correspond to the output blocks of the matrix.
         :arg input_exprs: a :class:`list` of densities that correspond to the
@@ -237,7 +234,6 @@ class BlockEvaluationWrangler:
                 self.exprs[ibrow], ibcol, index_set, auto_where)
 
 
-
 def make_block_evaluation_wrangler(places, exprs, input_exprs,
         domains=None, context=None, auto_where=None,
         _weighted_farfield=None,
@@ -313,13 +309,13 @@ def make_block_proxy_skeleton(actx, ibrow, ibcol,
     if source_or_target == "source":
         from pytential.target import PointsTarget as ProxyPoints
 
-        swap_arg_order = lambda x, y: (x, y)
+        swap_arg_order = lambda x, y: (x, y)        # noqa: E731
         evaluate_farfield = wrangler.evaluate_source_farfield
         block_stack = np.vstack
     elif source_or_target == "target":
         from pytential.source import PointPotentialSource as ProxyPoints
 
-        swap_arg_order = lambda x, y: (y, x)
+        swap_arg_order = lambda x, y: (y, x)        # noqa: E731
         evaluate_farfield = wrangler.evaluate_target_farfield
         block_stack = np.hstack
     else:
@@ -328,9 +324,7 @@ def make_block_proxy_skeleton(actx, ibrow, ibcol,
     # {{{ generate proxies
 
     domain = wrangler.domains[ibcol]
-    dep_source = places.get_geometry(domain.geometry)
     dep_discr = places.get_discretization(domain.geometry, domain.discr_stage)
-
     pxy = proxy_generator(actx, domain, indices)
 
     # }}}
