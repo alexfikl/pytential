@@ -36,7 +36,7 @@ def flatten_if_needed(actx: PyOpenCLArrayContext, ary: np.ndarray):
         return obj_array_vectorize_n_args(flatten_if_needed, actx, ary)
 
     if not isinstance(ary, DOFArray):
-        return ary.copy(actx.queue)
+        return ary
 
     if ary.array_context is None:
         ary = thaw(actx, ary)
