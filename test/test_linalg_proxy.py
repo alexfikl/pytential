@@ -373,55 +373,6 @@ def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=Fal
                 ("marker", marker_dev),
                 ])
 
-            density_nodes = flatten_to_numpy(actx, density_discr.nodes())
-            nodes = flatten_to_numpy(actx, nodes)
-            ranges = actx.to_numpy(ranges)
-
-            for i in range(srcindices.nblocks):
-                isrc = srcindices.block_indices(i)
-                inbr = nbrindices.block_indices(i)
-                iall = np.s_[ranges[i]:ranges[i + 1]]
-
-                pt.figure(figsize=(10, 8))
-                pt.plot(density_nodes[0], density_nodes[1],
-                        "ko", ms=2.0, alpha=0.5)
-                pt.plot(density_nodes[0][srcindices.indices],
-                        density_nodes[1][srcindices.indices],
-                        "o", ms=2.0)
-                pt.plot(density_nodes[0][isrc], density_nodes[1][isrc],
-                        "o", ms=2.0)
-                pt.plot(density_nodes[0][inbr], density_nodes[1][inbr],
-                        "o", ms=2.0)
-                pt.plot(nodes[0][iall], nodes[1][iall],
-                        "x", ms=2.0)
-                pt.xlim([-1.5, 1.5])
-                pt.ylim([-1.5, 1.5])
-
-                filename = f"test_area_query_{ambient_dim}d_{i:04}.png"
-                pt.savefig(filename, dpi=300)
-                pt.clf()
-        elif ambient_dim == 3:
-            from meshmode.discretization.visualization import make_visualizer
-            marker = np.empty(density_discr.ndofs)
-
-            for i in range(srcindices.nblocks):
-                isrc = srcindices.block_indices(i)
-                inbr = nbrindices.block_indices(i)
-
-                marker.fill(0.0)
-                marker[srcindices.indices] = 0.0
-                marker[isrc] = -42.0
-                marker[inbr] = +42.0
-
-                from meshmode.dof_array import unflatten
-                marker_dev = unflatten(actx, density_discr, actx.from_numpy(marker))
-
-                vis = make_visualizer(actx, density_discr, 10)
-                filename = f"test_area_query_{ambient_dim}d_{i:04}.vtu"
-                vis.write_vtk_file(filename, [
-                    ("marker", marker_dev),
-                    ])
->>>>>>> master
     # }}}
 
 # }}}
