@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = """
 Copyright (C) 2013 Andreas Kloeckner
 Copyright (C) 2018 Alexandru Fikl
@@ -27,9 +25,6 @@ THE SOFTWARE.
 
 from typing import Optional
 
-import six
-from six.moves import zip
-
 from pymbolic.mapper.evaluator import (
         EvaluationMapper as PymbolicEvaluationMapper)
 import numpy as np
@@ -42,6 +37,7 @@ from meshmode.array_context import PyOpenCLArrayContext
 from meshmode.dof_array import DOFArray, thaw
 
 from pytools import memoize_in
+from pytential.qbx.cost import AbstractQBXCostModel
 
 from pytential import sym
 
@@ -105,23 +101,34 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
     def map_max(self, expr):
         return self._map_minmax(
                 self.array_context.np.maximum,
-                super(EvaluationMapperBase, self).map_max,
+                super().map_max,
                 expr)
 
     def map_min(self, expr):
         return self._map_minmax(
                 self.array_context.np.minimum,
-                super(EvaluationMapperBase, self).map_min,
+                super().map_min,
                 expr)
 
     def map_node_sum(self, expr):
+        # FIXME: make less CL specific
+        queue = self.array_context.queue
         return sum(
-                cl.array.sum(grp_ary).get()[()]
+                cl.array.sum(grp_ary, queue=queue).get()[()]
                 for grp_ary in self.rec(expr.operand))
 
     def map_node_max(self, expr):
+        # FIXME: make less CL specific
+        queue = self.array_context.queue
         return max(
-                cl.array.max(grp_ary).get()[()]
+                cl.array.max(grp_ary, queue=queue).get()[()]
+                for grp_ary in self.rec(expr.operand))
+
+    def map_node_min(self, expr):
+        # FIXME: make less CL specific
+        queue = self.array_context.queue
+        return min(
+                cl.array.min(grp_ary, queue=queue).get()[()]
                 for grp_ary in self.rec(expr.operand))
 
     def _map_elementwise_reduction(self, reduction_name, expr):
@@ -174,7 +181,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
                     for grp in discr.groups])
             return _reduce(element_knl(), result)
         else:
-            raise ValueError('unsupported granularity: %s' % granularity)
+            raise ValueError(f"unsupported granularity: {granularity}")
 
     def map_elementwise_sum(self, expr):
         return self._map_elementwise_reduction("sum", expr)
@@ -225,8 +232,8 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
             bound_op_cache[expr] = bound_op
 
         scipy_op = bound_op.scipy_op(expr.variable_name, expr.dofdesc,
-                **dict((var_name, self.rec(var_expr))
-                    for var_name, var_expr in six.iteritems(expr.extra_vars)))
+                **{var_name: self.rec(var_expr)
+                    for var_name, var_expr in expr.extra_vars.items()})
 
         from pytential.solve import gmres
         rhs = self.rec(expr.rhs)
@@ -306,7 +313,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
                 return getattr(self.array_context.np, expr.function.name)(*args)
 
         else:
-            return super(EvaluationMapperBase, self).map_call(expr)
+            return super().map_call(expr)
 
 # }}}
 
@@ -349,11 +356,21 @@ class CostModelMapper(EvaluationMapperBase):
     This executes everything *except* the layer potential operator. Instead of
     executing the operator, the cost model gets run and the cost
     data is collected.
+
+    .. attribute:: kernel_to_calibration_params
+
+        Can either be a :class:`str` "constant_one", which uses the constant 1.0 as
+        calibration parameters for all stages of all kernels, or be a :class:`dict`,
+        which maps from kernels to the calibration parameters, returned from
+        `estimate_kernel_specific_calibration_params`.
+
     """
 
-    def __init__(self, bound_expr, actx, context=None,
-            target_geometry=None,
-            target_points=None, target_normals=None, target_tangents=None):
+    def __init__(self, bound_expr, actx,
+                 kernel_to_calibration_params, per_box,
+                 context=None,
+                 target_geometry=None,
+                 target_points=None, target_normals=None, target_tangents=None):
         if context is None:
             context = {}
         EvaluationMapperBase.__init__(
@@ -362,31 +379,46 @@ class CostModelMapper(EvaluationMapperBase):
                 target_points,
                 target_normals,
                 target_tangents)
+
+        self.kernel_to_calibration_params = kernel_to_calibration_params
         self.modeled_cost = {}
+        self.metadata = {}
+        self.per_box = per_box
 
     def exec_compute_potential_insn(
             self, actx: PyOpenCLArrayContext, insn, bound_expr, evaluate):
         source = bound_expr.places.get_geometry(insn.source.geometry)
+        knls = frozenset(knl for knl in insn.kernels)
 
-        result, cost_model_result = (
-                source.cost_model_compute_potential_insn(
-                    actx, insn, bound_expr, evaluate))
+        if (isinstance(self.kernel_to_calibration_params, str)
+                and self.kernel_to_calibration_params == "constant_one"):
+            calibration_params = \
+                AbstractQBXCostModel.get_unit_calibration_params()
+        else:
+            calibration_params = self.kernel_to_calibration_params[knls]
+
+        result, (cost_model_result, metadata) = \
+            source.cost_model_compute_potential_insn(
+                actx, insn, bound_expr, evaluate, calibration_params,
+                self.per_box)
 
         # The compiler ensures this.
         assert insn not in self.modeled_cost
 
         self.modeled_cost[insn] = cost_model_result
+        self.metadata[insn] = metadata
+
         return result
 
     def get_modeled_cost(self):
-        return self.modeled_cost
+        return self.modeled_cost, self.metadata
 
 # }}}
 
 
 # {{{ scipy-like mat-vec op
 
-class MatVecOp(object):
+class MatVecOp:
     """A :class:`scipy.sparse.linalg.LinearOperator` work-alike.
     Exposes a :mod:`pytential` operator as a generic matrix operation,
     i.e., given :math:`x`, compute :math:`Ax`.
@@ -487,7 +519,7 @@ class MatVecOp(object):
 def _prepare_domains(nresults, places, domains, default_domain):
     """
     :arg nresults: number of results.
-    :arg places: a :class:`~pytential.symbolic.execution.GeometryCollection`.
+    :arg places: a :class:`~pytential.GeometryCollection`.
     :arg domains: recommended domains.
     :arg default_domain: default value for domains which are not provided.
 
@@ -539,7 +571,7 @@ def _prepare_auto_where(auto_where, places=None):
 
 def _prepare_expr(places, expr, auto_where=None):
     """
-    :arg places: :class:`~pytential.symbolic.execution.GeometryCollection`.
+    :arg places: :class:`~pytential.GeometryCollection`.
     :arg expr: a symbolic expression.
     :return: processed symbolic expressions, tagged with the appropriate
         `where` identifier from places, etc.
@@ -554,7 +586,7 @@ def _prepare_expr(places, expr, auto_where=None):
     expr = ToTargetTagger(auto_source, auto_target)(expr)
     expr = DerivativeBinder()(expr)
 
-    for name, place in six.iteritems(places.places):
+    for name, place in places.places.items():
         if isinstance(place, LayerPotentialSourceBase):
             expr = place.preprocess_optemplate(name, places, expr)
 
@@ -569,22 +601,15 @@ def _prepare_expr(places, expr, auto_where=None):
 # {{{ geometry collection
 
 def _is_valid_identifier(name):
-    if six.PY2:
-        # https://docs.python.org/2.7/reference/lexical_analysis.html#identifiers
-        import re
-        is_identifier = re.match(r"^[^\d\W]\w*\Z", name) is not None
-    else:
-        is_identifier = name.isidentifier()
-
     import keyword
-    return is_identifier and not keyword.iskeyword(name)
+    return name.isidentifier() and not keyword.iskeyword(name)
 
 
 _GEOMETRY_COLLECTION_DISCR_CACHE_NAME = "refined_qbx_discrs"
 _GEOMETRY_COLLECTION_CONNS_CACHE_NAME = "refined_qbx_conns"
 
 
-class GeometryCollection(object):
+class GeometryCollection:
     """A mapping from symbolic identifiers ("place IDs", typically strings)
     to 'geometries', where a geometry can be a
     :class:`pytential.source.PotentialSource`
@@ -601,8 +626,8 @@ class GeometryCollection(object):
     .. automethod:: copy
     .. automethod:: merge
 
-    Refinement of :class:`QBXLayerPotentialSource` entries is performed
-    on demand, or it may be performed by explcitly calling
+    Refinement of :class:`pytential.qbx.QBXLayerPotentialSource` entries is
+    performed on demand, or it may be performed by explcitly calling
     :func:`pytential.qbx.refinement.refine_geometry_collection`,
     which allows more customization of the refinement process through
     parameters.
@@ -613,7 +638,7 @@ class GeometryCollection(object):
         :arg places: a scalar, tuple of or mapping of symbolic names to
             geometry objects. Supported objects are
             :class:`~pytential.source.PotentialSource`,
-            :class:`~potential.target.TargetBase` and
+            :class:`~pytential.target.TargetBase` and
             :class:`~meshmode.discretization.Discretization`. If this is
             a mapping, the keys that are strings must be valid Python identifiers.
         :arg auto_where: location identifier for each geometry object, used
@@ -663,17 +688,17 @@ class GeometryCollection(object):
             if not isinstance(name, str):
                 continue
             if not _is_valid_identifier(name):
-                raise ValueError("`{}` is not a valid identifier".format(name))
+                raise ValueError(f"'{name}' is not a valid identifier")
 
         # check allowed types
-        for p in six.itervalues(self.places):
+        for p in self.places.values():
             if not isinstance(p, (PotentialSource, TargetBase, Discretization)):
                 raise TypeError("Values in 'places' must be discretization, targets "
                         "or layer potential sources.")
 
         # check ambient_dim
         from pytools import is_single_valued
-        ambient_dims = [p.ambient_dim for p in six.itervalues(self.places)]
+        ambient_dims = [p.ambient_dim for p in self.places.values()]
         if not is_single_valued(ambient_dims):
             raise RuntimeError("All 'places' must have the same ambient dimension.")
 
@@ -699,8 +724,8 @@ class GeometryCollection(object):
         key = (geometry, discr_stage)
 
         if key not in cache:
-            raise KeyError("cached discretization does not exist on `{}`"
-                    "for stage `{}`".format(geometry, discr_stage))
+            raise KeyError("cached discretization does not exist on '{}'"
+                    "for stage '{}'".format(geometry, discr_stage))
 
         return cache[key]
 
@@ -718,8 +743,8 @@ class GeometryCollection(object):
         key = (geometry, from_stage, to_stage)
 
         if key not in cache:
-            raise KeyError("cached connection does not exist on `{}` "
-                    "from `{}` to `{}`".format(geometry, from_stage, to_stage))
+            raise KeyError("cached connection does not exist on '{}' "
+                    "from '{}' to '{}'".format(geometry, from_stage, to_stage))
 
         return cache[key]
 
@@ -812,26 +837,69 @@ class GeometryCollection(object):
         return self.copy(places=new_places)
 
     def __repr__(self):
-        return "%s(%s)" % (type(self).__name__, repr(self.places))
+        return "{}({})".format(type(self).__name__, repr(self.places))
 
     def __str__(self):
-        return "%s(%s)" % (type(self).__name__, str(self.places))
+        return "{}({})".format(type(self).__name__, str(self.places))
 
 # }}}
 
 
 # {{{ bound expression
 
-class BoundExpression(object):
-    """An expression readied for evaluation by binding it to a
-    :class:`~pytential.symbolic.execution.GeometryCollection`.
+def _find_array_context_from_args_in_context(context, supplied_array_context=None):
+    array_contexts = []
+    if supplied_array_context is not None:
+        if not isinstance(supplied_array_context, PyOpenCLArrayContext):
+            raise TypeError(
+                    "first argument (if supplied) must be a "
+                    "PyOpenCLArrayContext")
 
-    .. automethod :: get_modeled_cost
+        array_contexts.append(supplied_array_context)
+    del supplied_array_context
+
+    def look_for_array_contexts(ary):
+        if isinstance(ary, DOFArray):
+            if ary.array_context is not None:
+                array_contexts.append(ary.array_context)
+        elif isinstance(ary, np.ndarray) and ary.dtype.char == "O":
+            for idx in np.ndindex(ary.shape):
+                look_for_array_contexts(ary[idx])
+        else:
+            pass
+
+    for key, val in context.items():
+        look_for_array_contexts(val)
+
+    if array_contexts:
+        from pytools import is_single_valued
+        if not is_single_valued(array_contexts):
+            raise ValueError("arguments do not agree on an array context")
+
+        array_context = array_contexts[0]
+    else:
+        array_context = None
+
+    if not isinstance(array_context, PyOpenCLArrayContext):
+        raise TypeError(
+                "array context (derived from arguments) is not a "
+                "PyOpenCLArrayContext")
+
+    return array_context
+
+
+class BoundExpression:
+    """An expression readied for evaluation by binding it to a
+    :class:`~pytential.GeometryCollection`.
+
+    .. automethod :: cost_per_stage
+    .. automethod :: cost_per_box
     .. automethod :: scipy_op
     .. automethod :: eval
     .. automethod :: __call__
+    .. attribute :: places
 
-    Created by calling :func:`bind`.
+    Created by calling :func:`pytential.bind`.
     """
 
     def __init__(self, places, sym_op_expr):
@@ -845,8 +913,43 @@ class BoundExpression(object):
     def _get_cache(self, name):
         return self.caches.setdefault(name, {})
 
-    def get_modeled_cost(self, queue, **args):
-        cost_model_mapper = CostModelMapper(self, queue, args)
+    def cost_per_stage(self, calibration_params, **kwargs):
+        """
+        :arg queue: a :class:`pyopencl.CommandQueue` object.
+        :arg calibration_params: either a :class:`dict` returned by
+            `estimate_kernel_specific_calibration_params`, or a :class:`str`
+            "constant_one".
+        :return: a :class:`dict` mapping from instruction to per-stage cost. Each
+            per-stage cost is represented by a :class:`dict` mapping from the stage
+            name to the predicted time.
+        """
+        array_context = _find_array_context_from_args_in_context(kwargs)
+
+        if array_context is None:
+            raise ValueError("unable to figure array context from arguments")
+
+        cost_model_mapper = CostModelMapper(
+            self, array_context, calibration_params, per_box=False, context=kwargs
+        )
+        self.code.execute(cost_model_mapper)
+        return cost_model_mapper.get_modeled_cost()
+
+    def cost_per_box(self, calibration_params, **kwargs):
+        """
+        :arg queue: a :class:`pyopencl.CommandQueue` object.
+        :arg calibration_params: either a :class:`dict` returned by
+            `estimate_kernel_specific_calibration_params`, or a :class:`str`
+            "constant_one".
+        :return: a :class:`dict` mapping from instruction to per-box cost. Each
+            per-box cost is represented by a :class:`numpy.ndarray` or
+            :class:`pyopencl.array.Array` of shape (nboxes,), where the ith entry
+            represents the cost of all stages for box i.
+        """
+        array_context = _find_array_context_from_args_in_context(kwargs)
+
+        cost_model_mapper = CostModelMapper(
+            self, array_context, calibration_params, per_box=True, context=kwargs
+        )
         self.code.execute(cost_model_mapper)
         return cost_model_mapper.get_modeled_cost()
 
@@ -861,8 +964,8 @@ class BoundExpression(object):
             :class:`~pytential.symbolic.primitives.DEFAULT_TARGET` is required
             to be a key in :attr:`places`.
         :returns: An object that (mostly) satisfies the
-            :mod:`scipy.linalg.LinearOperator` protocol, except for accepting
-            and returning :class:`pyopencl.array.Array` arrays.
+            :class:`scipy.sparse.linalg.LinearOperator` protocol, except for
+            accepting and returning :class:`pyopencl.array.Array` arrays.
         """
 
         if isinstance(self.code.result, np.ndarray):
@@ -917,41 +1020,8 @@ class BoundExpression(object):
         if context is None:
             context = {}
 
-        # {{{ figure array context
-
-        array_contexts = []
-        if array_context is not None:
-            if not isinstance(array_context, PyOpenCLArrayContext):
-                raise TypeError(
-                        "first argument (if supplied) must be a "
-                        "PyOpenCLArrayContext")
-
-            array_contexts.append(array_context)
-        del array_context
-
-        def look_for_array_contexts(ary):
-            if isinstance(ary, DOFArray):
-                if ary.array_context is not None:
-                    array_contexts.append(ary.array_context)
-            elif isinstance(ary, np.ndarray) and ary.dtype.char == "O":
-                for idx in np.ndindex(ary.shape):
-                    look_for_array_contexts(ary[idx])
-            else:
-                pass
-
-        for key, val in context.items():
-            look_for_array_contexts(val)
-
-        if array_contexts:
-            from pytools import is_single_valued
-            if not is_single_valued(array_contexts):
-                raise ValueError("arguments do not agree on an array context")
-
-            array_context = array_contexts[0]
-        else:
-            array_context = None
-
-        # }}}
+        array_context = _find_array_context_from_args_in_context(
+                context, array_context)
 
         exec_mapper = EvaluationMapper(
                 self, array_context, context, timing_data=timing_data)
@@ -985,16 +1055,16 @@ class BoundExpression(object):
 
 def bind(places, expr, auto_where=None):
     """
-    :arg places: a :class:`~pytential.symbolic.execution.GeometryCollection`.
+    :arg places: a :class:`pytential.GeometryCollection`.
         Alternatively, any list or mapping that is a valid argument for its
         constructor can also be used.
     :arg auto_where: for simple source-to-self or source-to-target
         evaluations, find 'where' attributes automatically.
     :arg expr: one or multiple expressions consisting of primitives
-        form :mod:`pytential.symbolic.primitives` (aka :mod:`pytential.sym`).
+        form :mod:`pytential.symbolic.primitives` (aka ``pytential.sym``).
         Multiple expressions can be combined into one object to pass here
         in the form of a :mod:`numpy` object array
-    :returns: a :class:`BoundExpression`
+    :returns: a :class:`pytential.symbolic.execution.BoundExpression`
     """
     if not isinstance(places, GeometryCollection):
         places = GeometryCollection(places, auto_where=auto_where)
@@ -1042,7 +1112,7 @@ def build_matrix(actx, places, exprs, input_exprs, domains=None,
         auto_where=None, context=None):
     """
     :arg actx: a :class:`~meshmode.array_context.ArrayContext`.
-    :arg places: a :class:`~pytential.symbolic.execution.GeometryCollection`.
+    :arg places: a :class:`pytential.GeometryCollection`.
         Alternatively, any list or mapping that is a valid argument for its
         constructor can also be used.
     :arg exprs: an array of expressions corresponding to the output block

@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2018 Alexandru Fikl"
 
 __license__ = """
@@ -184,11 +182,11 @@ def _generate_unit_sphere(ambient_dim, approx_npoints):
     return points
 
 
-class ProxyGenerator(object):
+class ProxyGenerator:
     r"""
     .. attribute:: places
 
-        A :class:`~pytential.symbolic.execution.GeometryCollection`
+        A :class:`~pytential.GeometryCollection`
         containing the geometry on which the proxy balls are generated.
 
     .. attribute:: nproxy

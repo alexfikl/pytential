@@ -1,5 +1,3 @@
-from __future__ import division, absolute_import
-
 __copyright__ = "Copyright (C) 2010-2013 Andreas Kloeckner"
 
 __license__ = """
@@ -22,10 +20,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import six
-from six.moves import intern
+from sys import intern
 from warnings import warn
-from functools import wraps
+from functools import wraps, partial
 
 import numpy as np
 from pymbolic.primitives import (  # noqa: F401,N813
@@ -37,8 +34,6 @@ from pymbolic.geometric_algebra.primitives import (  # noqa: F401
         NablaComponent, DerivativeSource, Derivative as DerivativeBase)
 from pymbolic.primitives import make_sym_vector  # noqa: F401
 from pytools.obj_array import make_obj_array, flat_obj_array  # noqa: F401
-
-from functools import partial
 
 
 __doc__ = """
@@ -104,7 +99,6 @@ Placeholders
 ^^^^^^^^^^^^
 
 .. autoclass:: var
-.. autofunction:: make_sym_vector
 .. autofunction:: make_sym_mv
 .. autofunction:: make_sym_surface_mv
 
@@ -165,6 +159,7 @@ Elementary numerics
 .. autoclass:: NumReferenceDerivative
 .. autoclass:: NodeSum
 .. autoclass:: NodeMax
+.. autoclass:: NodeMin
 .. autoclass:: ElementwiseSum
 .. autoclass:: ElementwiseMax
 .. autofunction:: integral
@@ -221,7 +216,6 @@ Layer potentials
 .. autofunction:: n_dot
 .. autofunction:: n_cross
 .. autofunction:: curl
-.. autofunction:: pretty
 
 Pretty-printing expressions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -247,7 +241,7 @@ def _deprecate_kwargs(oldkey, newkey):
     return super_wrapper
 
 
-class _NoArgSentinel(object):
+class _NoArgSentinel:
     pass
 
 
@@ -263,21 +257,21 @@ class DEFAULT_TARGET:  # noqa: N801
 
 class QBX_SOURCE_STAGE1:   # noqa: N801
     """Symbolic identifier for the Stage 1 discretization of a
-    :class:`pytential.source.QBXLayerPotentialSource`.
+    :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
 class QBX_SOURCE_STAGE2:   # noqa: N801
     """Symbolic identifier for the Stage 2 discretization of a
-    :class:`pytential.source.QBXLayerPotentialSource`.
+    :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
 class QBX_SOURCE_QUAD_STAGE2:   # noqa: N801
     """Symbolic identifier for the upsampled Stage 2 discretization of a
-    :class:`pytential.source.QBXLayerPotentialSource`.
+    :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
@@ -297,7 +291,7 @@ class GRANULARITY_ELEMENT:  # noqa: N801
     pass
 
 
-class DOFDescriptor(object):
+class DOFDescriptor:
     """A data structure specifying the meaning of a vector of degrees of freedom
     that is handled by :mod:`pytential` (a "DOF vector"). In particular, using
     :attr:`geometry`, this data structure describes the geometric object on which
@@ -337,12 +331,12 @@ class DOFDescriptor(object):
                 or discr_stage == QBX_SOURCE_STAGE1
                 or discr_stage == QBX_SOURCE_STAGE2
                 or discr_stage == QBX_SOURCE_QUAD_STAGE2):
-            raise ValueError("unknown discr stage tag: '{}'".format(discr_stage))
+            raise ValueError(f"unknown discr stage tag: '{discr_stage}'")
 
         if not (granularity == GRANULARITY_NODE
                 or granularity == GRANULARITY_CENTER
                 or granularity == GRANULARITY_ELEMENT):
-            raise ValueError("unknown granularity: '{}'".format(granularity))
+            raise ValueError(f"unknown granularity: '{granularity}'")
 
         self.geometry = geometry
         self.discr_stage = discr_stage
@@ -649,7 +643,7 @@ class NumReferenceDerivative(DiscretizationProperty):
 
 @_deprecate_kwargs("where", "dofdesc")
 def reference_jacobian(func, output_dim, dim, dofdesc=None):
-    """Return a :class:`np.array` representing the Jacobian of a vector function
+    """Return a :class:`numpy.ndarray` representing the Jacobian of a vector function
     with respect to the reference coordinates.
     """
     jac = np.zeros((output_dim, dim), np.object)
@@ -664,7 +658,7 @@ def reference_jacobian(func, output_dim, dim, dofdesc=None):
 
 @_deprecate_kwargs("where", "dofdesc")
 def parametrization_derivative_matrix(ambient_dim, dim, dofdesc=None):
-    """Return a :class:`np.array` representing the derivative of the
+    """Return a :class:`numpy.ndarray` representing the derivative of the
     reference-to-global parametrization.
     """
 
@@ -1180,6 +1174,12 @@ class NodeMax(SingleScalarOperandExpression):
     mapper_method = "map_node_max"
 
 
+class NodeMin(SingleScalarOperandExpression):
+    """Implements a global minimum over all discretization nodes."""
+
+    mapper_method = "map_node_min"
+
+
 @_deprecate_kwargs("where", "dofdesc")
 def integral(ambient_dim, dim, operand, dofdesc=None):
     """A volume integral of *operand*."""
@@ -1316,7 +1316,7 @@ class IterativeInverse(Expression):
     def get_hash(self):
         return hash((self.__class__,) + (self.expression,
             self.rhs, self.variable_name,
-            frozenset(six.iteritems(self.extra_vars)), self.dofdesc))
+            frozenset(self.extra_vars.items()), self.dofdesc))
 
     mapper_method = intern("map_inverse")
 
@@ -1385,7 +1385,7 @@ def laplace(ambient_dim, operand):
     d = Derivative()
     nabla = d.dnabla(ambient_dim)
     return d.resolve(nabla | d(
-        d.resolve((nabla * d(operand))))).as_scalar()
+        d.resolve(nabla * d(operand)))).as_scalar()
 
 
 # {{{ potentials
@@ -1432,9 +1432,7 @@ class IntG(Expression):
         """*target_derivatives* and later arguments should be considered
         keyword-only.
 
-        :arg kernel: a kernel as accepted by
-            :func:`sumpy.kernel.to_kernel_and_args`,
-            likely a :class:`sumpy.kernel.Kernel`.
+        :arg kernel: an instance of :class:`sumpy.kernel.Kernel`.
         :arg qbx_forced_limit: +1 if the output is required to originate from a
             QBX center on the "+" side of the boundary. -1 for the other side.
             Evaluation at a target with a value of +/- 1 in *qbx_forced_limit*
@@ -1489,11 +1487,11 @@ class IntG(Expression):
             raise ValueError("invalid value (%s) of qbx_forced_limit"
                     % qbx_forced_limit)
 
-        kernel_arg_names = set(
+        kernel_arg_names = {
                 karg.loopy_arg.name
                 for karg in (
                     kernel.get_args()
-                    + kernel.get_source_args()))
+                    + kernel.get_source_args())}
 
         kernel_arguments = kernel_arguments.copy()
         if kwargs:

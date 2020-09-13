@@ -1,6 +1,3 @@
-# -*- coding: utf-8 -*-
-from __future__ import annotations
-
 __copyright__ = """
 Copyright (C) 2013 Andreas Kloeckner
 Copyright (C) 2016, 2017 Matt Wala
@@ -431,7 +428,7 @@ class RefinerWrangler(TreeWranglerBase):
                 logger.debug("refiner: found {} panel(s) to refine".format(
                     npanels_to_refine - npanels_to_refine_prev))
 
-        return (out["refine_flags_updated"].get() == 1).all()
+        return (out["refine_flags_updated"] == 1).all()
 
     # }}}
 
@@ -465,7 +462,7 @@ def make_empty_refine_flags(queue, density_discr):
     """Return an array on the device suitable for use as element refine flags.
 
     :arg queue: An instance of :class:`pyopencl.CommandQueue`.
-    :arg lpot_source: An instance of :class:`QBXLayerPotentialSource`.
+    :arg lpot_source: An instance of :class:`pytential.qbx.QBXLayerPotentialSource`.
 
     :returns: A :class:`pyopencl.array.Array` suitable for use as refine flags,
         initialized to zero.
@@ -531,7 +528,7 @@ def _visualize_refinement(actx: PyOpenCLArrayContext, discr,
                 actx).as_vector(dtype=object)
         vis_data.append(("bdry_normals", bdry_normals),)
 
-    vis.write_vtk_file("refinement-%s-%03d.vtu" % (stage_name, niter), vis_data)
+    vis.write_vtk_file(f"refinement-{stage_name}-{niter:03d}.vtu", vis_data)
 
 
 def _make_quad_stage2_discr(lpot_source, stage2_density_discr):
@@ -797,7 +794,7 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
         _copy_collection=False):
     """Entry point for calling the refiner. Once the refinement is complete,
     the refined discretizations can be obtained from *places* by calling
-    :meth:`~pytential.symbolic.execution.GeometryCollection.get_discretization`.
+    :meth:`~pytential.GeometryCollection.get_discretization`.
 
     :returns: a new version of the :class:`pytential.GeometryCollection`
         *places* with (what)?
@@ -811,8 +808,8 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
     from pytential.qbx import QBXLayerPotentialSource
     lpot_source = places.get_geometry(dofdesc.geometry)
     if not isinstance(lpot_source, QBXLayerPotentialSource):
-        raise ValueError("`%s` is not a `QBXLayerPotentialSource`" % (
-            dofdesc.geometry))
+        raise ValueError(f"'{dofdesc.geometry}' is not a QBXLayerPotentialSource")
+
     # {{{
 
     if maxiter is None:
@@ -845,7 +842,8 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
             sym.QBX_SOURCE_QUAD_STAGE2: 3
             }
     if dofdesc.discr_stage not in stage_index_map:
-        raise ValueError("unknown discr stage: %s" % dofdesc.discr_stage)
+        raise ValueError(f"unknown discr stage: {dofdesc.discr_stage}")
+
     stage_index = stage_index_map[dofdesc.discr_stage]
     geometry = dofdesc.geometry
 
@@ -923,18 +921,18 @@ def refine_geometry_collection(places,
         debug=None, visualize=False):
     """Entry point for refining all the
     :class:`~pytential.qbx.QBXLayerPotentialSource` in the given collection.
-    The :class:`~pytential.symbolic.execution.GeometryCollection` performs
+    The :class:`~pytential.GeometryCollection` performs
     on-demand refinement, but this function can be used to tweak the
     parameters.
 
-    :arg places: A :class:`~pytential.symbolic.execution.GeometryCollection`.
+    :arg places: A :class:`~pytential.GeometryCollection`.
     :arg refine_discr_stage: Defines up to which stage the refinement should
         be performed. One of
         :class:`~pytential.symbolic.primitives.QBX_SOURCE_STAGE1`,
         :class:`~pytential.symbolic.primitives.QBX_SOURCE_STAGE2` or
         :class:`~pytential.symbolic.primitives.QBX_SOURCE_QUAD_STAGE2`.
     :arg group_factory: An instance of
-        :class:`meshmode.mesh.discretization.ElementGroupFactory`. Used for
+        :class:`meshmode.discretization.poly_element.ElementGroupFactory`. Used for
         discretizing the coarse refined mesh.
 
     :arg kernel_length_scale: The kernel length scale, or *None* if not
