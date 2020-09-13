@@ -39,10 +39,10 @@ Proxy Point Generation
 ~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: ProxyGenerator
+.. autoclass:: BlockProxyPoints
 
 .. autofunction:: partition_by_nodes
 .. autofunction:: gather_block_neighbor_points
-
 """
 
 
