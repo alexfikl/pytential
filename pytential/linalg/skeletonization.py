@@ -373,7 +373,7 @@ def make_block_proxy_skeleton(actx, ibrow, ibcol,
     return pxyblk
 
 
-def skeletonize_block_by_proxy(actx,
+def _skeletonize_block_by_proxy_with_mats(actx,
         ibcol, ibrow, places, proxy_generator, wrangler, blkindices,
         id_eps=None, id_rank=None,
         max_particles_in_box=None):
@@ -440,7 +440,20 @@ def skeletonize_block_by_proxy(actx,
     skl_indices = MatrixBlockIndexRanges(actx.context,
             tgt_skl_indices, src_skl_indices)
 
-    return L, R, skl_indices
+    return L, R, skl_indices, src_mat, tgt_mat
+
+
+def skeletonize_block_by_proxy(actx,
+        ibcol, ibrow, places, proxy_generator, wrangler, blkindices,
+        id_eps=None, id_rank=None,
+        max_particles_in_box=None):
+    L, R, sklindices, _, _ = _skeletonize_block_by_proxy_with_mats(actx,
+            ibcol, ibrow, places, proxy_generator, wrangler, blkindices,
+            id_eps=id_eps,
+            id_rank=id_rank,
+            max_particles_in_box=max_particles_in_box)
+
+    return L, R, sklindices
 
 # }}}
 

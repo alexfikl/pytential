@@ -388,7 +388,7 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
     queue = cl.CommandQueue(ctx)
     actx = PyOpenCLArrayContext(queue)
 
-    case = case.copy(approx_block_count=6, op_type="scalar")
+    case = case.copy(approx_block_count=6, op_type="scalar", id_eps=1.0e-8)
     logger.info("\n%s", case)
 
     # {{{ geometry
@@ -422,7 +422,7 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
 
     # }}}
 
-    # {{{ check skeletonize
+    # {{{ check proxy id decomposition
 
     # dense matrix
     from pytential.symbolic.execution import build_matrix
@@ -432,26 +432,63 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
             )
 
     # skeleton
-    from pytential.linalg.skeletonization import skeletonize_block_by_proxy
-    L, R, sklindices = skeletonize_block_by_proxy(actx, 0, 0,
-            places, proxy_generator, wrangler, srcindices,
+    from pytential.linalg.skeletonization import \
+            _skeletonize_block_by_proxy_with_mats
+    L, R, sklindices, src, tgt = _skeletonize_block_by_proxy_with_mats(actx,
+            0, 0, places, proxy_generator, wrangler, srcindices,
             id_eps=case.id_eps,
             max_particles_in_box=case.max_particles_in_box)
 
+    srcindices = srcindices.get(queue)
+    sklindices = sklindices.get(queue)
+    for i in range(sklindices.nblocks):
+        # targets (rows)
+        bi = np.searchsorted(
+            srcindices.row.block_indices(i),
+            sklindices.row.block_indices(i),
+            )
+
+        A = tgt[i, i]
+        S = A[bi, :]
+        tgt_error = la.norm(A - L[i, i] @ S) / la.norm(A)
+
+        # sources (columns)
+        bj = np.searchsorted(
+            srcindices.col.block_indices(i),
+            sklindices.col.block_indices(i),
+            )
+
+        A = src[i, i]
+        S = A[:, bj]
+        src_error = la.norm(A - S @ R[i, i]) / la.norm(A)
+
+        logger.info("[%04d] id_eps %.5e src %.5e tgt %.5e rank %d/%d",
+                i, case.id_eps,
+                src_error, tgt_error, R[i, i].shape[0], R[i, i].shape[1])
+
+        assert src_error < 6 * case.id_eps
+        assert tgt_error < 6 * case.id_eps
+
+    # }}}
+
+    # {{{ check skeletonize
+
     from pytential.linalg.skeletonization import SkeletonizedBlock
-    skeleton = SkeletonizedBlock(L=L, R=R, sklindices=sklindices.get(queue))
+    skeleton = SkeletonizedBlock(L=L, R=R, sklindices=sklindices)
 
-    err_l, err_r, err_f = extra.skeletonization_error(
-            mat, skeleton, srcindices.get(queue))
+    blk_err_l, blk_err_r, err_f = extra.skeletonization_error(
+            mat, skeleton, srcindices)
+    err_l = la.norm(blk_err_l, np.inf)
+    err_r = la.norm(blk_err_r, np.inf)
 
-    logger.info("error: L %.5e R %.5e F %.5e",
-            la.norm(err_l, np.inf), la.norm(err_r, np.inf), err_f)
+    logger.info("error: id_eps %.5e L %.5e R %.5e F %.5e",
+            case.id_eps, err_l, err_r, err_f)
 
     # FIXME: why is the 3D error so large?
     rtol = 5 * 10**places.ambient_dim * case.id_eps
 
-    assert la.norm(err_l, np.inf) < rtol
-    assert la.norm(err_r, np.inf) < rtol
+    assert err_l < rtol
+    assert err_r < rtol
     assert err_f < rtol
 
     # }}}
@@ -462,12 +499,12 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
         return
 
     import matplotlib.pyplot as pt
-    pt.imshow(np.log10(err_l + 1.0e-16))
+    pt.imshow(np.log10(blk_err_l + 1.0e-16))
     pt.colorbar()
     pt.savefig("test_skeletonize_by_proxy_err_l")
     pt.clf()
 
-    pt.imshow(np.log10(err_r + 1.0e-16))
+    pt.imshow(np.log10(blk_err_r + 1.0e-16))
     pt.colorbar()
     pt.savefig("test_skeletonize_by_proxy_err_r")
     pt.clf()
