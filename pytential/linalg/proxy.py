@@ -250,44 +250,54 @@ class ProxyGenerator:
             radius_expr = "{f} * rqbx"
         radius_expr = radius_expr.format(f=self.radius_factor)
 
-        # NOTE: centers of mass are computed using a second-order approximation
         knl = lp.make_kernel([
             "{[irange]: 0 <= irange < nranges}",
-            "{[i]: 0 <= i < npoints}",
-            "{[idim]: 0 <= idim < dim}"
+            "{[i]: 0 <= i < npoints}", "{[j]: 0 <= j < npoints}",
+            "{[idim]: 0 <= idim < ndim}"
             ],
-            ["""
+            """
             for irange
                 <> ioffset = srcranges[irange]
                 <> npoints = srcranges[irange + 1] - srcranges[irange]
 
-                proxy_center[idim, irange] = 1.0 / npoints * \
-                    reduce(sum, i, sources[idim, srcindices[i + ioffset]]) \
-                        {{dup=idim:i}}
+                for idim
+                    <> bbox_max = \
+                        simul_reduce(max, i, sources[idim, srcindices[i + ioffset]])
+                    <> bbox_min = \
+                        simul_reduce(min, i, sources[idim, srcindices[i + ioffset]])
 
-                <> rblk = simul_reduce(max, i, sqrt(simul_reduce(sum, idim, \
-                        (proxy_center[idim, irange] -
-                         sources[idim, srcindices[i + ioffset]]) ** 2)))
+                    proxy_center[idim, irange] = (bbox_max + bbox_min) / 2.0
+                end
 
-                <> rqbx_int = simul_reduce(max, i, sqrt(simul_reduce(sum, idim, \
+                <> rblk = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
                         (proxy_center[idim, irange] -
-                         center_int[idim, srcindices[i + ioffset]]) ** 2)) + \
-                         expansion_radii[srcindices[i + ioffset]])
-                <> rqbx_ext = simul_reduce(max, i, sqrt(simul_reduce(sum, idim, \
+                         sources[idim, srcindices[j + ioffset]]) ** 2))) \
+                        {dup=idim}
+            """
+            + ("""
+                <> rqbx_int = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
                         (proxy_center[idim, irange] -
-                         center_ext[idim, srcindices[i + ioffset]]) ** 2)) + \
-                         expansion_radii[srcindices[i + ioffset]])
+                         center_int[idim, srcindices[j + ioffset]]) ** 2)) + \
+                         expansion_radii[srcindices[j + ioffset]]) \
+                         {dup=idim}
+                <> rqbx_ext = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
+                        (proxy_center[idim, irange] -
+                         center_ext[idim, srcindices[j + ioffset]]) ** 2)) + \
+                         expansion_radii[srcindices[j + ioffset]]) \
+                         {dup=idim}
                 <> rqbx = rqbx_int if rqbx_ext < rqbx_int else rqbx_ext
-
+            """ if self.radius_factor > 1.0e-14 else "<> rqbx = 0.0")
+            + """
                 proxy_radius[irange] = {radius_expr}
             end
-            """.format(radius_expr=radius_expr)],
-            [
-                lp.GlobalArg("sources", None,
-                    shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
+            """.format(radius_expr=radius_expr),
+            ([] if self.radius_factor < 1.0e-14 else [
                 lp.GlobalArg("center_int", None,
                     shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
                 lp.GlobalArg("center_ext", None,
+                    shape=(self.ambient_dim, "nsources"), dim_tags="sep,C")
+            ]) + [
+                lp.GlobalArg("sources", None,
                     shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
                 lp.GlobalArg("proxy_center", None,
                     shape=(self.ambient_dim, "nranges")),
@@ -297,8 +307,8 @@ class ProxyGenerator:
                 "..."
             ],
             name="find_proxy_radii_knl",
-            assumptions="dim>=1 and nranges>=1",
-            fixed_parameters=dict(dim=self.ambient_dim),
+            assumptions="ndim>=1 and nranges>=1",
+            fixed_parameters=dict(ndim=self.ambient_dim),
             lang_version=MOST_RECENT_LANGUAGE_VERSION)
 
         knl = lp.tag_inames(knl, "idim*:unr")
@@ -310,6 +320,36 @@ class ProxyGenerator:
         knl = lp.split_iname(knl, "irange", 128, outer_tag="g.0")
 
         return knl
+
+    def _get_proxy_centers_and_radii(self, actx, source_dd, indices, **kwargs):
+        from pytential import bind, sym
+        source_dd = sym.as_dofdesc(source_dd)
+        discr = self.places.get_discretization(
+                source_dd.geometry, source_dd.discr_stage)
+
+        from meshmode.dof_array import flatten, thaw
+        context = {
+                "sources": flatten(thaw(actx, discr.nodes())),
+                "srcindices": indices.indices,
+                "srcranges": indices.ranges
+                }
+
+        if self.radius_factor > 1.0e-14:
+            radii = bind(self.places, sym.expansion_radii(
+                self.ambient_dim, dofdesc=source_dd))(actx)
+            center_int = bind(self.places, sym.expansion_centers(
+                self.ambient_dim, -1, dofdesc=source_dd))(actx)
+            center_ext = bind(self.places, sym.expansion_centers(
+                self.ambient_dim, +1, dofdesc=source_dd))(actx)
+
+            context["center_int"] = flatten(center_int)
+            context["center_ext"] = flatten(center_ext)
+            context["expansion_radii"] = flatten(radii)
+
+        knl = self.get_kernel()
+        _, (centers, radii,) = knl(actx.queue, **context, **kwargs)
+
+        return centers, radii
 
     # }}}
 
@@ -336,27 +376,8 @@ class ProxyGenerator:
 
         # {{{ compute proxy centers and radii
 
-        from pytential import bind, sym
-        source_dd = sym.as_dofdesc(source_dd)
-        discr = self.places.get_discretization(
-                source_dd.geometry, source_dd.discr_stage)
-
-        radii = bind(self.places, sym.expansion_radii(
-            self.ambient_dim, dofdesc=source_dd))(actx)
-        center_int = bind(self.places, sym.expansion_centers(
-            self.ambient_dim, -1, dofdesc=source_dd))(actx)
-        center_ext = bind(self.places, sym.expansion_centers(
-            self.ambient_dim, +1, dofdesc=source_dd))(actx)
-
-        from meshmode.dof_array import flatten, thaw
-        knl = self.get_kernel()
-        _, (centers_dev, radii_dev,) = knl(actx.queue,
-            sources=flatten(thaw(actx, discr.nodes())),
-            center_int=flatten(center_int),
-            center_ext=flatten(center_ext),
-            expansion_radii=flatten(radii),
-            srcindices=indices.indices,
-            srcranges=indices.ranges, **kwargs)
+        centers_dev, radii_dev = self._get_proxy_centers_and_radii(actx,
+                source_dd, indices, **kwargs)
 
         from pytential.utils import flatten_to_numpy
         centers = np.vstack(flatten_to_numpy(actx, centers_dev))
@@ -370,7 +391,7 @@ class ProxyGenerator:
             return np.dot(A, v) + b
 
         nproxy = self.nproxy * indices.nblocks
-        proxies = np.empty((discr.ambient_dim, nproxy), dtype=centers.dtype)
+        proxies = np.empty((self.ambient_dim, nproxy), dtype=centers.dtype)
         pxy_nr_base = 0
 
         for i in range(indices.nblocks):
@@ -423,13 +444,6 @@ def gather_block_neighbor_points(actx, discr, indices, pxy,
 
     indices = indices.get(actx.queue)
 
-    # NOTE: this is constructed for multiple reasons:
-    #   * TreeBuilder takes object arrays
-    #   * `srcindices` can be a small subset of nodes, so this will save
-    #   some work
-    #   * `srcindices` may reorder the array returned by nodes(), so this
-    #   makes sure that we have the same order in tree.user_source_ids
-    #   and friends
     from pytential.utils import flatten_to_numpy
     sources = flatten_to_numpy(actx, discr.nodes())
     sources = make_obj_array([

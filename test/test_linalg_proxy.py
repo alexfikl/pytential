@@ -152,7 +152,9 @@ def test_partition_points(ctx_factory, tree_kind, case, visualize=False):
 
 @pytest.mark.parametrize("case", PROXY_TEST_CASES)
 @pytest.mark.parametrize("index_sparsity_factor", [1.0, 0.6])
-def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=False):
+@pytest.mark.parametrize("proxy_radius_factor", [0.0, 1.1])
+def test_proxy_generator(ctx_factory, case,
+        index_sparsity_factor, proxy_radius_factor, visualize=False):
     """Tests that the proxies generated are all at the correct radius from the
     points in the cluster, etc.
     """
@@ -161,7 +163,9 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
     queue = cl.CommandQueue(ctx)
     actx = PyOpenCLArrayContext(queue)
 
-    case = case.copy(index_sparsity_factor=index_sparsity_factor)
+    case = case.copy(
+            index_sparsity_factor=index_sparsity_factor,
+            proxy_radius_factor=proxy_radius_factor)
     logger.info("\n%s", case)
 
     # {{{ check proxies
@@ -173,7 +177,10 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
     srcindices = case.get_block_indices(actx, density_discr, matrix_indices=False)
 
     from pytential.linalg.proxy import ProxyGenerator
-    proxies = ProxyGenerator(places)(actx, places.auto_source, srcindices)
+    proxies = ProxyGenerator(places,
+            radius_factor=case.proxy_radius_factor,
+            approx_nproxy=case.proxy_approx_count)(
+                    actx, places.auto_source, srcindices)
 
     proxies = proxies.get(queue)
     pxypoints = np.vstack(proxies.points)
@@ -187,10 +194,13 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
         ipxy = proxies.indices.block_indices(i)
 
         r = la.norm(pxypoints[:, ipxy] - pxycenters[:, i].reshape(-1, 1), axis=0)
-        assert np.allclose(r - proxies.radii[i], 0.0, atol=1.0e-14)
+        p_error = la.norm(r - proxies.radii[i])
 
         r = la.norm(nodes[:, isrc] - pxycenters[:, i].reshape(-1, 1), axis=0)
-        assert np.all(r - proxies.radii[i] < 0.0)
+        n_error = la.norm(r - proxies.radii[i], np.inf)
+
+        assert p_error < 1.0e-14, f"block {i}"
+        assert n_error - proxies.radii[i] < 1.0e-14, f"block {i}"
 
     # }}}
 
@@ -216,30 +226,32 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
                 bind(places, sym.expansion_radii(ambient_dim))(actx)
                 )
 
+        fig = pt.figure(figsize=(10, 8))
         for i in range(srcindices.nblocks):
             isrc = srcindices.block_indices(i)
             ipxy = proxies.indices.block_indices(i)
 
-            pt.figure(figsize=(10, 8))
-            axis = pt.gca()
+            ax = pt.gca()
             for j in isrc:
                 c = pt.Circle(ci[:, j], r[j], color="k", alpha=0.1)
-                axis.add_artist(c)
+                ax.add_artist(c)
                 c = pt.Circle(ce[:, j], r[j], color="k", alpha=0.1)
-                axis.add_artist(c)
+                ax.add_artist(c)
 
-            pt.plot(nodes[0], nodes[1], "ko", ms=2.0, alpha=0.5)
-            pt.plot(nodes[0, srcindices.indices], nodes[1, srcindices.indices],
+            ax.plot(nodes[0], nodes[1], "ko", ms=2.0, alpha=0.5)
+            ax.plot(nodes[0, srcindices.indices], nodes[1, srcindices.indices],
                     "o", ms=2.0)
-            pt.plot(nodes[0, isrc], nodes[1, isrc], "o", ms=2.0)
-            pt.plot(pxypoints[0, ipxy], pxypoints[1, ipxy], "o", ms=2.0)
-            pt.axis("equal")
-            pt.xlim([-1.5, 1.5])
-            pt.ylim([-1.5, 1.5])
+            ax.plot(nodes[0, isrc], nodes[1, isrc], "o", ms=1.0)
+            ax.plot(pxypoints[0, ipxy], pxypoints[1, ipxy], "o", ms=1.0)
+            ax.plot(pxycenters[0, i], pxycenters[1, i], "ko", ms=2.0)
+            ax.set_aspect("equal")
+            ax.set_xlim([-1.5, 1.5])
+            ax.set_ylim([-1.5, 1.5])
 
             filename = f"test_proxy_generator_{ambient_dim}d_{i:04}"
-            pt.savefig(filename, dpi=300)
-            pt.clf()
+            fig.savefig(filename, dpi=300)
+            fig.clf()
+        pt.close(fig)
     else:
         from meshmode.discretization.visualization import make_visualizer
         from meshmode.mesh.processing import ( # noqa
@@ -275,7 +287,9 @@ def test_proxy_generator(ctx_factory, case, index_sparsity_factor, visualize=Fal
 
 @pytest.mark.parametrize("case", PROXY_TEST_CASES)
 @pytest.mark.parametrize("index_sparsity_factor", [1.0, 0.6])
-def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=False):
+@pytest.mark.parametrize("proxy_radius_factor", [0.0, 1.1])
+def test_neighbor_points(ctx_factory, case,
+        index_sparsity_factor, proxy_radius_factor, visualize=False):
     """Test that neighboring points (inside the proxy balls, but outside the
     current block/cluster) are actually inside.
     """
@@ -284,7 +298,9 @@ def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=Fal
     queue = cl.CommandQueue(ctx)
     actx = PyOpenCLArrayContext(queue)
 
-    case = case.copy(index_sparsity_factor=index_sparsity_factor)
+    case = case.copy(
+            index_sparsity_factor=index_sparsity_factor,
+            proxy_radius_factor=proxy_radius_factor)
     logger.info("\n%s", case)
 
     # {{{ check neighboring points
@@ -297,7 +313,10 @@ def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=Fal
 
     # generate proxy points
     from pytential.linalg.proxy import ProxyGenerator
-    proxies = ProxyGenerator(places)(actx, places.auto_source, srcindices)
+    proxies = ProxyGenerator(places,
+            radius_factor=case.proxy_radius_factor,
+            approx_nproxy=case.proxy_approx_count)(
+                    actx, places.auto_source, srcindices)
 
     # get neighboring points
     from pytential.linalg.proxy import gather_block_neighbor_points
@@ -334,23 +353,34 @@ def test_neighbor_points(ctx_factory, case, index_sparsity_factor, visualize=Fal
         except ImportError:
             return
 
+        pxycenters = np.vstack(proxies.centers)
+        pxyradii = proxies.radii
+
+        fig = pt.figure(figsize=(10, 10))
         for i in range(srcindices.nblocks):
             isrc = srcindices.block_indices(i)
             inbr = nbrindices.block_indices(i)
 
-            pt.figure(figsize=(10, 10))
-            pt.plot(nodes[0], nodes[1], "ko", ms=2.0, alpha=0.5)
-            pt.plot(nodes[0, srcindices.indices], nodes[1, srcindices.indices],
+            ax = fig.gca()
+
+            ax.plot(nodes[0], nodes[1], "ko", ms=2.0, alpha=0.5)
+            ax.plot(nodes[0, srcindices.indices], nodes[1, srcindices.indices],
                     "o", ms=2.0)
-            pt.plot(nodes[0, isrc], nodes[1, isrc], "o", ms=2.0)
-            pt.plot(nodes[0, inbr], nodes[1, inbr], "o", ms=2.0)
-            pt.axis("equal")
+            ax.plot(nodes[0, isrc], nodes[1, isrc], "o", ms=1.0)
+            ax.plot(nodes[0, inbr], nodes[1, inbr], "o", ms=1.0)
+            ax.plot(pxycenters[0, i], pxycenters[1, i], "ko", ms=2.0)
+            ax.axis("equal")
+
+            c = pt.Circle(pxycenters[:, i], pxyradii[i], color="k", alpha=0.1)
+            ax.add_artist(c)
+
             pt.xlim([-1.5, 1.5])
             pt.ylim([-1.5, 1.5])
 
             filename = f"test_area_query_{ambient_dim}d_{i:04}"
-            pt.savefig(filename, dpi=300)
-            pt.clf()
+            fig.savefig(filename, dpi=300)
+            fig.clf()
+        pt.close(fig)
     elif ambient_dim == 3:
         from meshmode.discretization.visualization import make_visualizer
         marker = np.empty(density_discr.ndofs)
