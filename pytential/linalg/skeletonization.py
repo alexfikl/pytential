@@ -180,8 +180,10 @@ class BlockEvaluationWrangler:
         from pytential.symbolic.execution import _prepare_auto_where
         auto_where = _prepare_auto_where(auto_where, places=places)
 
+        from pytential.symbolic.mappers import OperatorCollector
         expr = QBXForcedLimitReplacer(qbx_forced_limit=None)(expr)
         expr = DOFDescriptorReplacer(auto_where[0], auto_where[1])(expr)
+        expr, = OperatorCollector()(expr)
 
         return expr
 
@@ -229,9 +231,12 @@ class BlockEvaluationWrangler:
 
     def evaluate_nearfield(self,
             actx, places, ibrow, ibcol, index_set, auto_where=None):
+        from pytential.symbolic.execution import _prepare_expr
+        expr = _prepare_expr(places, self.exprs[ibrow], auto_where=auto_where)
+
         return self._evaluate(actx, places,
                 self.nearfield_block_builder,
-                self.exprs[ibrow], ibcol, index_set, auto_where)
+                expr, ibcol, index_set, auto_where)
 
 
 def make_block_evaluation_wrangler(places, exprs, input_exprs,
@@ -242,8 +247,6 @@ def make_block_evaluation_wrangler(places, exprs, input_exprs,
 
     from pytential.symbolic.execution import _prepare_auto_where
     auto_where = _prepare_auto_where(auto_where, places)
-    from pytential.symbolic.execution import _prepare_expr
-    exprs = _prepare_expr(places, exprs, auto_where=auto_where)
 
     if not (isinstance(exprs, np.ndarray) and exprs.dtype.char == "O"):
         exprs = make_obj_array([exprs])
@@ -353,7 +356,8 @@ def make_block_proxy_skeleton(actx, ibrow, ibcol,
 
     nbrindices = MatrixBlockIndexRanges(actx.context,
             *swap_arg_order(nbrindices, indices))
-    nbrmat = wrangler.evaluate_nearfield(actx, places, ibrow, ibcol, nbrindices)
+    nbrmat = wrangler.evaluate_nearfield(actx, places, ibrow, ibcol, nbrindices,
+            auto_where=domain)
 
     # }}}
 
