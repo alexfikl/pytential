@@ -53,7 +53,6 @@ def plot_partition_indices(actx, discr, indices, **kwargs):
     except ImportError:
         return
 
-    indices = indices.get(actx.queue)
     args = [
         str(kwargs.get("tree_kind", "linear")).replace("-", "_"),
         kwargs.get("discr_stage", "stage1"),
@@ -119,7 +118,6 @@ PROXY_TEST_CASES = [
 
 # {{{ test_partition_points
 
-@pytest.mark.skip(reason="only useful with visualize=True")
 @pytest.mark.parametrize("tree_kind", ["adaptive", None])
 @pytest.mark.parametrize("case", PROXY_TEST_CASES)
 def test_partition_points(ctx_factory, tree_kind, case, visualize=False):
@@ -129,7 +127,7 @@ def test_partition_points(ctx_factory, tree_kind, case, visualize=False):
     queue = cl.CommandQueue(ctx)
     actx = PyOpenCLArrayContext(queue)
 
-    case = case.copy(tree_kind=tree_kind, index_sparsity_factor=0.6)
+    case = case.copy(tree_kind=tree_kind, index_sparsity_factor=1.0)
     logger.info("\n%s", case)
 
     # {{{
@@ -139,6 +137,12 @@ def test_partition_points(ctx_factory, tree_kind, case, visualize=False):
 
     density_discr = places.get_discretization(case.name)
     indices = case.get_block_indices(actx, density_discr)
+    indices = indices.get(actx.queue).row
+
+    expected_indices = np.arange(0, density_discr.ndofs)
+    assert indices.ranges[-1] == density_discr.ndofs
+
+    assert la.norm(np.sort(indices.indices) - expected_indices) < 1.0e-14
 
     if visualize:
         plot_partition_indices(actx, density_discr, indices, tree_kind=tree_kind)
@@ -410,6 +414,31 @@ def test_neighbor_points(ctx_factory, case,
 
 # {{{ test_skeletonize_by_proxy
 
+def _plot_skeleton_with_proxies(name, sources, pxy, isrc, iskl):
+    import matplotlib.pyplot as pt
+
+    fig, ax = pt.subplots(1, figsize=(10, 10), dpi=300)
+    ax.plot(sources[0][isrc.indices], sources[1][isrc.indices],
+            "ko", alpha=0.5)
+
+    pxycenters = np.vstack(pxy.centers)
+    pxyradii = pxy.radii
+    for i in range(isrc.nblocks):
+        iblk = iskl.block_indices(i)
+        pt.plot(sources[0][iblk], sources[1][iblk], "o")
+
+        c = pt.Circle(pxycenters[:, i], pxyradii[i], color="k", alpha=0.1)
+        ax.add_artist(c)
+        ax.text(*pxycenters[:, i], f"{i}",
+                fontweight="bold", ha="center", va="center")
+
+    ax.set_aspect("equal")
+    ax.set_xlim([-1.5, 1.5])
+    ax.set_ylim([-1.5, 1.5])
+    fig.savefig(f"test_skeletonize_by_proxy_{name}")
+    pt.close(fig)
+
+
 @pytest.mark.parametrize("case", PROXY_TEST_CASES)
 def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
     """Test single-level level skeletonization accuracy."""
@@ -511,11 +540,11 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
     err_l = la.norm(blk_err_l, np.inf)
     err_r = la.norm(blk_err_r, np.inf)
 
-    logger.info("error: id_eps %.5e L %.5e R %.5e F %.5e",
-            case.id_eps, err_l, err_r, err_f)
-
     # FIXME: why is the 3D error so large?
-    rtol = 5 * 10**places.ambient_dim * case.id_eps
+    rtol = 2 * 10**places.ambient_dim * case.id_eps
+
+    logger.info("error: id_eps %.5e L %.5e R %.5e F %.5e (rtol %.5e)",
+            case.id_eps, err_l, err_r, err_f, rtol)
 
     assert err_l < rtol
     assert err_r < rtol
@@ -539,36 +568,16 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
     pt.savefig("test_skeletonize_by_proxy_err_r")
     pt.clf()
 
-    def plot_skeleton(isrc, iskl, name):
-        pt.figure(figsize=(10, 10), dpi=300)
-        pt.plot(sources[0][isrc.indices], sources[1][isrc.indices],
-                "ko", alpha=0.5)
-
-        ax = pt.gca()
-        for i in range(srcindices.nblocks):
-            iblk = iskl.block_indices(i)
-            pt.plot(sources[0][iblk], sources[1][iblk], "o")
-
-            c = pt.Circle(pxycenters[:, i], pxyradii[i], color="k", alpha=0.1)
-            ax.add_artist(c)
-
-        ax.set_aspect("equal")
-        pt.xlim([-1.5, 1.5])
-        pt.ylim([-1.5, 1.5])
-        pt.savefig(f"test_skeletonize_by_proxy_{name}")
-        pt.clf()
-
-    pxy = proxy_generator(actx, wrangler.domains[0], srcindices.row).get(queue)
-    pxycenters = np.vstack(pxy.centers)
-    pxyradii = pxy.radii
-
     if places.ambient_dim == 2:
+        pxy = proxy_generator(actx, wrangler.domains[0], srcindices.row).get(queue)
         sources = flatten_to_numpy(actx, density_discr.nodes())
         srcindices = srcindices.get(queue)
         sklindices = sklindices.get(queue)
 
-        plot_skeleton(srcindices.col, sklindices.col, "sources")
-        plot_skeleton(srcindices.row, sklindices.row, "targets")
+        _plot_skeleton_with_proxies("sources", sources, pxy,
+                srcindices.col, sklindices.col)
+        _plot_skeleton_with_proxies("targets", sources, pxy,
+                srcindices.row, sklindices.row)
     else:
         # TODO: would be nice to figure out a way to visualize some of these
         # skeletonization results in 3D. Probably need to teach the
@@ -576,6 +585,185 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
         pass
 
     # }}}
+
+# }}}
+
+
+# {{{ test_skeletonize_by_proxy_symmetry
+
+def test_skeletonize_by_proxy_symmetry(ctx_factory, visualize=False):
+    """Tests skeletonization in a symmetric setting."""
+
+    ctx = ctx_factory()
+    queue = cl.CommandQueue(ctx)
+    actx = PyOpenCLArrayContext(queue)
+
+    case = extra.CurveTestCase(
+            name="ellipse",
+            op_type="double",
+            max_particles_in_box=96,
+            proxy_radius_factor=1.2,
+            proxy_approx_count=16,
+            tree_kind=None,
+            curve_fn=partial(ellipse, 2.0),
+            target_order=16,
+            resolutions=[96],
+            weighted_farfield=None)
+
+    logger.info("\n%s", case)
+
+    # {{{ geometry
+
+    dd = sym.DOFDescriptor(case.name, discr_stage=case.skel_discr_stage)
+    qbx = case.get_layer_potential(actx, case.resolutions[0], case.target_order)
+    places = GeometryCollection(qbx, auto_where=dd)
+
+    density_discr = places.get_discretization(dd.geometry, dd.discr_stage)
+    srcindices = case.get_block_indices(actx, density_discr)
+
+    logger.info("nblocks %3d ndofs %7d", srcindices.nblocks, density_discr.ndofs)
+
+    # }}}
+
+    # {{{ wranglers
+
+    from pytential.linalg.proxy import ProxyGenerator
+    from pytential.linalg.skeletonization import make_block_evaluation_wrangler
+    proxy_generator = ProxyGenerator(places,
+            radius_factor=case.proxy_radius_factor,
+            approx_nproxy=case.proxy_approx_count)
+
+    sym_u, sym_op = case.get_operator(places.ambient_dim, qbx_forced_limit="avg")
+    wrangler = make_block_evaluation_wrangler(places, sym_op, sym_u,
+            domains=None,
+            context=case.knl_concrete_kwargs,
+            _weighted_farfield=case.weighted_farfield,
+            _farfield_block_builder=case.farfield_block_builder,
+            _nearfield_block_builder=case.nearfield_block_builder)
+
+    # }}}
+
+    # {{{ skeletonize
+
+    from pytential.linalg.skeletonization import \
+            _skeletonize_block_by_proxy_with_mats
+    L, R, sklindices, src, tgt = _skeletonize_block_by_proxy_with_mats(actx,
+            0, 0, places, proxy_generator, wrangler, srcindices,
+            id_eps=case.id_eps,
+            max_particles_in_box=case.max_particles_in_box)
+
+    srcindices = srcindices.get(queue)
+    sklindices = sklindices.get(queue)
+
+    pxy_dev = proxy_generator(actx, case.name, srcindices.col)
+
+    pxy = pxy_dev.get(queue)
+    pxypoints = np.vstack(pxy.points)
+    pxycenters = np.vstack(pxy.centers)
+
+    # }}}
+
+    # {{{ checks
+
+    sources = np.vstack(flatten_to_numpy(actx, density_discr.nodes()))
+    if visualize:
+        _plot_skeleton_with_proxies("symmetry", sources, pxy,
+                srcindices.col, sklindices.col)
+
+    # pick symmetric blocks
+    # i, j = 0, 7
+    # i, j = 8, 15
+    i, j = 3, 12
+
+    # {{{ check nodes are actually symmetric (sanity check)
+
+    isrc = srcindices.col.block_indices(i)
+    jsrc = srcindices.col.block_indices(j)[::-1]
+    assert isrc.shape == jsrc.shape
+
+    error_x = la.norm(sources[0, isrc] - sources[0, jsrc]) / la.norm(sources[0, isrc])
+    error_y = la.norm(sources[1, isrc] + sources[1, jsrc]) / la.norm(sources[1, isrc])
+
+    logger.info("error: x %.6e y %.5e", error_x, error_y)
+    assert error_x < 5.0e-15 and error_y < 5.0e-15
+
+    # }}}
+
+    # {{{ check proxies are also symmetric
+
+    isrc = pxy.indices.block_indices(i)
+    jsrc = pxy.indices.block_indices(j)
+
+    ipxypoints = (pxypoints[:, isrc] - pxycenters[:, i:i+1]) / pxy.radii[i]
+    jpxypoints = (pxypoints[:, jsrc] - pxycenters[:, j:j+1]) / pxy.radii[j]
+
+    error_rad = abs(pxy.radii[i] - pxy.radii[j]) / abs(pxy.radii[i])
+    error_pxy = la.norm(ipxypoints - jpxypoints) # / la.norm(ipxypoints)
+
+    logger.info("error: radii %.6e pxy %.6e", error_rad, error_pxy)
+    assert error_rad < 2.0e-12
+    assert error_pxy < 5.0e-15
+
+    # }}}
+
+    # {{{ check proxy matrix symmetry
+
+    ipxysrc = src[i, i][:pxy.nproxy, :]
+    jpxysrc = src[j, j][:pxy.nproxy, :]
+
+    itop = np.s_[:jpxysrc.shape[0] // 2]
+    ibot = np.s_[jpxysrc.shape[0] // 2:]
+    jpxysrc = np.vstack([
+        jpxysrc[itop, :],
+        jpxysrc[ibot, :],
+        ])[::-1, ::-1]
+
+    if visualize:
+        import matplotlib.pyplot as pt
+        fig, (ax1, ax2) = pt.subplots(1, 2, figsize=(12, 4))
+        p = ax1.imshow(ipxysrc)
+        fig.colorbar(p, ax=ax1, shrink=0.75, orientation="horizontal")
+        p = ax2.imshow(np.log10(np.abs(jpxysrc - ipxysrc) + 1.0e-16))
+        # p = ax2.imshow(jpxysrc)
+        fig.colorbar(p, ax=ax2, shrink=0.75, orientation="horizontal")
+        fig.savefig(f"test_skeletonize_proxy_blocks_{i:02d}_and_{j:02d}")
+        pt.close(fig)
+
+    error_pxy_mat = la.norm(ipxysrc - jpxysrc)
+    logger.info("error: pxysrc %.6e", error_pxy_mat)
+    assert error_pxy_mat < 1.0e-14
+
+    # }}}
+
+    # {{{ check neighbor matrix symmetry
+
+    inbrsrc = src[i, i][pxy.nproxy:, :]
+    jnbrsrc = src[j, j][pxy.nproxy:, :]
+
+    itop = np.s_[:jnbrsrc.shape[0] // 2]
+    ibot = np.s_[jnbrsrc.shape[0] // 2:]
+    jnbrsrc = np.vstack([
+        jnbrsrc[itop, :][::-1, ::-1],
+        jnbrsrc[ibot, :][::-1, ::-1]
+        ])
+
+    if visualize:
+        fig, (ax1, ax2) = pt.subplots(1, 2, figsize=(12, 4))
+        p = ax1.imshow(inbrsrc)
+        fig.colorbar(p, ax=ax1, shrink=0.75, orientation="horizontal")
+        p = ax2.imshow(np.log10(np.abs(jnbrsrc - inbrsrc) + 1.0e-16))
+        # p = ax2.imshow(jnbrsrc)
+        fig.colorbar(p, ax=ax2, shrink=0.75, orientation="horizontal")
+        fig.savefig(f"test_skeletonize_neighbor_blocks_{i:02d}_and_{j:02d}")
+        pt.close(fig)
+
+    error_nbr_mat = la.norm(inbrsrc - jnbrsrc)
+    logger.info("error: nbrsrc %.6e", error_nbr_mat)
+    assert error_nbr_mat < 5.0e-13
+
+    # }}}
+
+    # }}
 
 # }}}
 
