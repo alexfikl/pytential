@@ -101,7 +101,11 @@ def partition_by_nodes(actx, discr,
             indices[i] = tree.user_source_ids[box_start:box_end]
     else:
         indices = np.arange(0, discr.ndofs, dtype=np.int)
-        ranges = np.arange(0, discr.ndofs + 1, max_particles_in_box, dtype=np.int)
+        ranges = np.linspace(
+                0,
+                discr.ndofs,
+                discr.ndofs // max_particles_in_box, dtype=np.int)
+        assert ranges[-1] == discr.ndofs
 
     return make_block_index(actx, indices, ranges=ranges)
 
