@@ -100,6 +100,10 @@ def partition_by_nodes(actx, discr,
             box_end = box_start + tree.box_source_counts_cumul[ibox]
             indices[i] = tree.user_source_ids[box_start:box_end]
     else:
+        if discr.ambient_dim != 2:
+            raise ValueError(
+                    "only 2d geometries are supported for 'tree_kind' == None")
+
         indices = np.arange(0, discr.ndofs, dtype=np.int)
         ranges = np.linspace(
                 0,
