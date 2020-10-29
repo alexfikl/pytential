@@ -681,8 +681,8 @@ def test_skeletonize_by_proxy_symmetry(ctx_factory, visualize=False):
     jsrc = srcindices.col.block_indices(j)[::-1]
     assert isrc.shape == jsrc.shape
 
-    error_x = la.norm(sources[0, isrc] - sources[0, jsrc]) / la.norm(sources[0, isrc])
-    error_y = la.norm(sources[1, isrc] + sources[1, jsrc]) / la.norm(sources[1, isrc])
+    error_x = la.norm(sources[0, isrc] - sources[0, jsrc])/la.norm(sources[0, isrc])
+    error_y = la.norm(sources[1, isrc] + sources[1, jsrc])/la.norm(sources[1, isrc])
 
     logger.info("error: x %.6e y %.5e", error_x, error_y)
     assert error_x < 5.0e-15 and error_y < 5.0e-15
@@ -698,7 +698,7 @@ def test_skeletonize_by_proxy_symmetry(ctx_factory, visualize=False):
     jpxypoints = (pxypoints[:, jsrc] - pxycenters[:, j:j+1]) / pxy.radii[j]
 
     error_rad = abs(pxy.radii[i] - pxy.radii[j]) / abs(pxy.radii[i])
-    error_pxy = la.norm(ipxypoints - jpxypoints) # / la.norm(ipxypoints)
+    error_pxy = la.norm(ipxypoints - jpxypoints)
 
     logger.info("error: radii %.6e pxy %.6e", error_rad, error_pxy)
     assert error_rad < 2.0e-12
