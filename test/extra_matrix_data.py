@@ -163,26 +163,40 @@ class MatrixTestCaseMixin:
         kwargs = self.knl_sym_kwargs.copy()
         kwargs["qbx_forced_limit"] = qbx_forced_limit
 
-        if self.op_type == "scalar":
+        if self.op_type in ["scalar", "single"]:
             sym_u = sym.var("u")
             sym_op = sym.S(knl, sym_u, **kwargs)
+
+        elif self.op_type == "double":
+            sym_u = sym.var("u")
+            sym_op = sym.D(knl, sym_u, **kwargs)
+            if qbx_forced_limit == "avg":
+                sym_op = 0.5 * self.side * sym_u + sym_op
+
         elif self.op_type == "scalar_mixed":
             sym_u = sym.var("u")
             sym_op = sym.S(knl, 0.3 * sym_u, **kwargs) \
                     + sym.D(knl, 0.5 * sym_u, **kwargs)
+            if qbx_forced_limit == "avg":
+                sym_op = 0.25 * self.side * sym_u + sym_op
+
         elif self.op_type == "vector":
             sym_u = sym.make_sym_vector("u", ambient_dim)
-
             sym_op = make_obj_array([
                 sym.Sp(knl, sym_u[0], **kwargs)
                 + sym.D(knl, sym_u[1], **kwargs),
                 sym.S(knl, 0.4 * sym_u[0], **kwargs)
                 + 0.3 * sym.D(knl, sym_u[0], **kwargs)
                 ])
+            if qbx_forced_limit == "avg":
+                sym_op = 0.5 * self.side * make_obj_array([
+                    -sym_u[0] + sym_u[1],
+                    0.3 * sym_u[0]
+                    ]) + sym_op
+
         else:
             raise ValueError(f"unknown operator type: '{self.op_type}'")
 
-        sym_op = 0.5 * sym_u + sym_op
         return sym_u, sym_op
 
 
