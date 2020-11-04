@@ -39,13 +39,16 @@ def is_zero(x):
     return isinstance(x, (int, float, complex, np.number)) and x == 0
 
 
-def _get_layer_potential_args(mapper, expr, include_args=None):
+def _get_layer_potential_args(actx, places, expr, context=None, include_args=None):
     """
     :arg mapper: a :class:`~pytential.symbolic.matrix.MatrixBuilderBase`.
     :arg expr: symbolic layer potential expression.
 
     :return: a mapping of kernel arguments evaluated by the *mapper*.
     """
+    from pytential import bind
+    if context is None:
+        context = {}
 
     kernel_args = {}
     for arg_name, arg_expr in expr.kernel_arguments.items():
@@ -53,9 +56,8 @@ def _get_layer_potential_args(mapper, expr, include_args=None):
                 and arg_name not in include_args):
             continue
 
-        kernel_args[arg_name] = flatten_if_needed(mapper.array_context,
-                mapper.rec(arg_expr)
-                )
+        kernel_args[arg_name] = flatten_if_needed(actx,
+                bind(places, arg_expr)(actx, **context))
 
     return kernel_args
 
@@ -257,20 +259,6 @@ class MatrixBlockBuilderBase(MatrixBuilderBase):
 
     @property
     @memoize_method
-    def _mat_mapper(self):
-        # mat_mapper is used to compute any kernel arguments that needs to
-        # be computed on the full discretization, ignoring our index_set,
-        # e.g the normal in a double layer potential
-
-        return MatrixBuilderBase(self.array_context,
-                self.dep_expr,
-                self.other_dep_exprs,
-                self.dep_source,
-                self.dep_discr,
-                self.places, self.context)
-
-    @property
-    @memoize_method
     def _blk_mapper(self):
         # blk_mapper is used to recursively compute the density to
         # a layer potential operator to ensure there is no composition
@@ -369,7 +357,8 @@ class MatrixBuilder(MatrixBuilderBase):
 
         actx = self.array_context
         kernel = expr.kernel
-        kernel_args = _get_layer_potential_args(self, expr)
+        kernel_args = _get_layer_potential_args(actx, self.places, expr,
+                context=self.context)
 
         from sumpy.expansion.local import LineTaylorLocalExpansion
         local_expn = LineTaylorLocalExpansion(kernel, lpot_source.qbx_order)
@@ -442,8 +431,9 @@ class P2PMatrixBuilder(MatrixBuilderBase):
         kernel_args = {arg.loopy_arg.name for arg in kernel_args}
 
         actx = self.array_context
-        kernel_args = _get_layer_potential_args(self,
-                expr, include_args=kernel_args)
+        kernel_args = _get_layer_potential_args(actx, self.places, expr,
+                context=self.context,
+                include_args=kernel_args)
         if self.exclude_self:
             kernel_args["target_to_source"] = actx.from_numpy(
                     np.arange(0, target_discr.ndofs, dtype=np.int)
@@ -508,7 +498,8 @@ class NearFieldBlockBuilder(MatrixBlockBuilderBase):
 
         actx = self.array_context
         kernel = expr.kernel
-        kernel_args = _get_layer_potential_args(self._mat_mapper, expr)
+        kernel_args = _get_layer_potential_args(actx, self.places, expr,
+                context=self.context)
 
         from sumpy.expansion.local import LineTaylorLocalExpansion
         local_expn = LineTaylorLocalExpansion(kernel, lpot_source.qbx_order)
@@ -584,8 +575,9 @@ class FarFieldBlockBuilder(MatrixBlockBuilderBase):
         kernel_args = {arg.loopy_arg.name for arg in kernel_args}
 
         actx = self.array_context
-        kernel_args = _get_layer_potential_args(self._mat_mapper,
-                expr, include_args=kernel_args)
+        kernel_args = _get_layer_potential_args(actx, self.places, expr,
+                context=self.context,
+                include_args=kernel_args)
         if self.exclude_self:
             kernel_args["target_to_source"] = actx.from_numpy(
                     np.arange(0, target_discr.ndofs, dtype=np.int)

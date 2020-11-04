@@ -123,6 +123,9 @@ PROXY_TEST_CASES = [
 def test_partition_points(ctx_factory, tree_kind, case, visualize=False):
     """Tests that the points are correctly partitioned (by visualization)."""
 
+    if case.ambient_dim == 3 and tree_kind is None:
+        pytest.skip("3d partitioning requires a tree")
+
     ctx = ctx_factory()
     queue = cl.CommandQueue(ctx)
     actx = PyOpenCLArrayContext(queue)
