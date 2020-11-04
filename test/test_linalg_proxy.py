@@ -670,6 +670,10 @@ def test_skeletonize_by_proxy_symmetry(ctx_factory, visualize=False):
         _plot_skeleton_with_proxies("symmetry", sources, pxy,
                 srcindices.col, sklindices.col)
 
+    # NOTE: picking different blocks will need some changes below too because
+    # they will have different symmetries: (3, 12) flips up-down, but
+    # (0, 7) flips left-right
+
     # pick symmetric blocks
     # i, j = 0, 7
     # i, j = 8, 15
@@ -763,7 +767,29 @@ def test_skeletonize_by_proxy_symmetry(ctx_factory, visualize=False):
 
     # }}}
 
-    # }}
+    # }}}
+
+    # {{{ plot proxy blocks
+
+    if visualize:
+        from matplotlib.patches import Rectangle
+        nrows = pxypoints.shape[1]
+        ncols = density_discr.ndofs
+
+        fig = pt.figure(figsize=(12, 5))
+        ax = fig.gca()
+        ax.imshow(np.eye(nrows, ncols), cmap="gray")
+        for i in range(srcindices.nblocks):
+            x0, x1 = srcindices.col.ranges[i:i+2]
+            y0, y1 = pxy.indices.ranges[i:i+2]
+
+            rect = Rectangle((x0, y0), x1 - x0, y1 - y0, alpha=0.5)
+            ax.add_artist(rect)
+
+        fig.savefig("test_skeletonize_proxy_identity")
+        pt.close(fig)
+
+    # }}}
 
 # }}}
 
