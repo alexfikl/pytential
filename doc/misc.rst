@@ -38,21 +38,11 @@ Then, on Linux:
 
 And on macOS:
 
-#.  ``conda install openmp clangdev cython git pip pocl islpy pyopencl sympy pyfmmlib pytest``
-
-#.  Ensure the Conda version of clang finds the system headers.  For Catalina
-    (10.15), you should set (`source <https://stackoverflow.com/a/60002595>`_)::
-
-      export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-
-    Whereas for Mojave (10.14), you may need to follow `these steps
-    <https://stackoverflow.com/a/52530212>`_.
+#.  ``conda install compilers cython git pip pocl islpy pyopencl sympy pyfmmlib pytest``
 
 #.  Type the following command::
 
-        hash -r; for i in pymbolic cgen genpy gmsh_interop modepy pyvisfile loopy boxtree sumpy meshmode pytential;do CC=clang LDFLAGS="-mlinker-version=519" python -m pip install git+https://github.com/inducer/$i; done
-
-    (The `LDFLAGS` argument is due to a `bug <https://stackoverflow.com/q/60934005>`_.)
+        hash -r; for i in pymbolic cgen genpy gmsh_interop modepy pyvisfile loopy boxtree sumpy meshmode pytential;do CC=clang python -m pip install git+https://github.com/inducer/$i; done
 
 Next time you want to use :mod:`pytential`, just run the following command::
 
