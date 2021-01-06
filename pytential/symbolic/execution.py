@@ -283,6 +283,21 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
         else:
             raise TypeError("cannot interpolate `{}`".format(type(operand)))
 
+    def map_shape_discretization_property(self, expr):
+        discr = self.places.get_discretization(
+                expr.dofdesc.geometry, expr.dofdesc.discr_stage)
+
+        from pytools import single_valued
+        try:
+            shape_name = single_valued([
+                grp.mesh_el_group._modepy_shape_cls.__name__
+                for grp in discr.groups
+                ])
+        except AssertionError:
+            raise TypeError("non-homogeneous element groups are not supported")
+
+        return self.rec(expr.shape_name_to_expr[shape_name.lower()])
+
     def map_common_subexpression(self, expr):
         if expr.scope == sym.cse_scope.EXPRESSION:
             cache = self.bound_expr._get_cache(EvaluationMapperCSECacheKey)
@@ -824,11 +839,12 @@ class GeometryCollection:
 
     def _get_qbx_discretization(self, geometry, discr_stage):
         lpot_source = self.get_geometry(geometry)
+        if discr_stage == sym.QBX_SOURCE_PRE_STAGE:
+            return lpot_source.density_discr
 
         try:
             discr = self._get_discr_from_cache(geometry, discr_stage)
         except KeyError:
-            from pytential import sym
             from pytential.qbx.refinement import _refine_for_global_qbx
 
             # NOTE: this adds the required discretizations to the cache

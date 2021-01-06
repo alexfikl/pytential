@@ -232,46 +232,54 @@ class _NoArgSentinel:
 
 # {{{ dof descriptors
 
-class DEFAULT_SOURCE:  # noqa: N801
+class DEFAULT_SOURCE:                   # noqa: N801
     pass
 
 
-class DEFAULT_TARGET:  # noqa: N801
+class DEFAULT_TARGET:                   # noqa: N801
     pass
 
 
-class QBX_SOURCE_STAGE1:   # noqa: N801
+class QBX_SOURCE_PRE_STAGE:             # noqa: N801
+    """Symbolic identifier for the target discretization of a
+    :class:`pytential.qbx.QBXLayerPotentialSource`, that is the original
+    unrefined discretization.
+    """
+    pass
+
+
+class QBX_SOURCE_STAGE1:                # noqa: N801
     """Symbolic identifier for the Stage 1 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
-class QBX_SOURCE_STAGE2:   # noqa: N801
+class QBX_SOURCE_STAGE2:                # noqa: N801
     """Symbolic identifier for the Stage 2 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
-class QBX_SOURCE_QUAD_STAGE2:   # noqa: N801
+class QBX_SOURCE_QUAD_STAGE2:           # noqa: N801
     """Symbolic identifier for the upsampled Stage 2 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
-class GRANULARITY_NODE:     # noqa: N801
+class GRANULARITY_NODE:                 # noqa: N801
     """DOFs are per node."""
     pass
 
 
-class GRANULARITY_CENTER:   # noqa: N801
+class GRANULARITY_CENTER:               # noqa: N801
     """DOFs interleaved per expansion center (two per node, one on each side)."""
     pass
 
 
-class GRANULARITY_ELEMENT:  # noqa: N801
+class GRANULARITY_ELEMENT:              # noqa: N801
     """DOFs per discretization element."""
     pass
 
@@ -315,7 +323,8 @@ class DOFDescriptor:
         if not (discr_stage is None
                 or discr_stage == QBX_SOURCE_STAGE1
                 or discr_stage == QBX_SOURCE_STAGE2
-                or discr_stage == QBX_SOURCE_QUAD_STAGE2):
+                or discr_stage == QBX_SOURCE_QUAD_STAGE2
+                or discr_stage == QBX_SOURCE_PRE_STAGE):
             raise ValueError(f"unknown discr stage tag: '{discr_stage}'")
 
         if not (granularity == GRANULARITY_NODE
@@ -401,7 +410,8 @@ def as_dofdesc(desc):
 
     if desc == QBX_SOURCE_STAGE1 \
             or desc == QBX_SOURCE_STAGE2 \
-            or desc == QBX_SOURCE_QUAD_STAGE2:
+            or desc == QBX_SOURCE_QUAD_STAGE2 \
+            or desc == QBX_SOURCE_PRE_STAGE:
         return DOFDescriptor(discr_stage=desc)
 
     if desc == GRANULARITY_NODE \
@@ -537,6 +547,22 @@ class DiscretizationProperty(Expression):
 
     def __getinitargs__(self):
         return (self.dofdesc,)
+
+
+class _ShapeDiscretizationProperty(DiscretizationProperty):
+    init_arg_names = ("shape_name_to_expr", "dofdesc")
+
+    def __init__(self, shape_name_to_expr, dofdesc=None):
+        if isinstance(shape_name_to_expr, tuple):
+            shape_name_to_expr = dict(shape_name_to_expr)
+
+        super().__init__(dofdesc)
+        self.shape_name_to_expr = shape_name_to_expr
+
+    def __getinitargs__(self):
+        return (tuple(self.shape_name_to_expr.items()), self.dofdesc)
+
+    mapper_method = intern("map_shape_discretization_property")
 
 
 # {{{ discretization properties
@@ -742,14 +768,8 @@ def first_fundamental_form(ambient_dim, dim=None, dofdesc=None):
     if dim is None:
         dim = ambient_dim - 1
 
-    if not (ambient_dim == 3 and dim == 2):
-        raise NotImplementedError("only available for surfaces in 3D")
-
     pd_mat = parametrization_derivative_matrix(ambient_dim, dim, dofdesc)
-
-    return cse(
-            np.dot(pd_mat.T, pd_mat),
-            "fundform1")
+    return cse(np.dot(pd_mat.T, pd_mat), "fundform1")
 
 
 def second_fundamental_form(ambient_dim, dim=None, dofdesc=None):
@@ -916,7 +936,7 @@ def _equilateral_parametrization_derivative_matrix(ambient_dim, dim=None,
 def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
         with_elementwise_max=True):
     """Return the largest factor by which the reference-to-global
-    mapping stretches the bi-unit (i.e. :math:`[-1,1]`) reference
+    mapping stretches the bi-unit (i.e. :math:`[-1, 1]`) reference
     element along any axis.
 
     If *map_elementwise_max* is True, returns a DOF vector that is elementwise
@@ -944,7 +964,7 @@ def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
             "pd_mat_jtj")
 
     stretch_factors = [
-            cse(sqrt(s), "mapping_singval_%d" % i)
+            cse(sqrt(s), f"simplex_mapping_singval_{i}")
             for i, s in enumerate(
                 _small_sym_mat_eigenvalues(
                     # Multiply by 4 to compensate for equilateral reference
@@ -958,7 +978,31 @@ def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     if with_elementwise_max:
         result = ElementwiseMax(result, dofdesc=dofdesc)
 
-    return cse(result, "mapping_max_stretch", cse_scope.DISCRETIZATION)
+    return cse(result, "simplex_mapping_max_stretch", cse_scope.DISCRETIZATION)
+
+
+def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
+        with_elementwise_max=True):
+    if dim is None:
+        dim = ambient_dim - 1
+
+    # NOTE: unlike in the simplex case, here we do not need to transform the
+    # reference element, as it already is nicely rotation invariant
+    pder_mat = first_fundamental_form(ambient_dim, dim=dim, dofdesc=dofdesc)
+    stretch_factors = [
+            cse(sqrt(s), f"hypercube_mapping_singval_{i}")
+            # NOTE: like for the simplex, we multiply `pder_mat` by 4 to
+            # account for the side length of 2 in J^T J
+            for i, s in enumerate(_small_mat_eigenvalues(4.0 * pder_mat))
+            ]
+
+    from pymbolic.primitives import Max
+    result = Max(tuple(stretch_factors))
+
+    if with_elementwise_max:
+        result = ElementwiseMax(result, dofdesc=dofdesc)
+
+    return cse(result, "hypercube_mapping_max_stretch", cse_scope.DISCRETIZATION)
 
 
 def _max_curvature(ambient_dim, dim=None, dofdesc=None):
@@ -1021,9 +1065,15 @@ def _quad_resolution(ambient_dim, dim=None, granularity=None, dofdesc=None):
     from_dd = as_dofdesc(dofdesc)
     to_dd = from_dd.copy(granularity=granularity)
 
-    stretch = _simplex_mapping_max_stretch_factor(ambient_dim,
-            dim=dim, dofdesc=from_dd)
-    return interp(from_dd, to_dd, stretch)
+    simplex_stretch = _simplex_mapping_max_stretch_factor(
+            ambient_dim, dim=dim, dofdesc=from_dd)
+    hypercube_stretch = _hypercube_mapping_max_stretch_factor(
+            ambient_dim, dim=dim, dofdesc=from_dd)
+
+    return _ShapeDiscretizationProperty({
+        "simplex": interp(from_dd, to_dd, simplex_stretch),
+        "hypercube": interp(from_dd, to_dd, hypercube_stretch),
+        }, dofdesc=dofdesc)
 
 
 def _source_danger_zone_radii(ambient_dim, dim=None,
