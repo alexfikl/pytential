@@ -533,13 +533,19 @@ def _visualize_refinement(actx: PyOpenCLArrayContext, discr,
 
 def _make_quad_stage2_discr(lpot_source, stage2_density_discr):
     from meshmode.discretization import Discretization
-    from meshmode.discretization.poly_element import \
-            QuadratureSimplexGroupFactory
+    from meshmode.discretization.poly_element import (
+            QuadratureSimplexElementGroup,
+            GaussLegendreTensorProductElementGroup,
+            OrderAndTypeBasedGroupFactory)
 
     return Discretization(
             lpot_source._setup_actx,
             stage2_density_discr.mesh,
-            QuadratureSimplexGroupFactory(lpot_source.fine_order),
+            OrderAndTypeBasedGroupFactory(
+                lpot_source.fine_order,
+                simplex_group_class=QuadratureSimplexElementGroup,
+                tensor_product_group_class=GaussLegendreTensorProductElementGroup
+                ),
             lpot_source.real_dtype)
 
 
@@ -826,10 +832,14 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
         force_stage2_uniform_refinement_rounds = 0
 
     if group_factory is None:
-        from meshmode.discretization.poly_element import \
-                InterpolatoryQuadratureSimplexGroupFactory
-        group_factory = InterpolatoryQuadratureSimplexGroupFactory(
-                lpot_source.density_discr.groups[0].order)
+        from meshmode.discretization.poly_element import (
+                InterpolatoryQuadratureSimplexElementGroup,
+                GaussLegendreTensorProductElementGroup,
+                OrderAndTypeBasedGroupFactory)
+        group_factory = OrderAndTypeBasedGroupFactory(
+                lpot_source.density_discr.groups[0].order,
+                simplex_group_class=InterpolatoryQuadratureSimplexElementGroup,
+                tensor_product_group_class=GaussLegendreTensorProductElementGroup)
 
     # }}}
 

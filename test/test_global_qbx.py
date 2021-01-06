@@ -40,6 +40,7 @@ from meshmode.mesh.generation import (  # noqa
         ellipse, cloverleaf, starfish, drop, n_gon, qbx_peanut,
         make_curve_mesh, generate_icosphere, generate_torus)
 from extra_curve_data import horseshoe
+from extra_int_eq_data import QuadSpheroidTestCase
 
 from pytential import bind, sym
 from pytential import GeometryCollection
@@ -97,23 +98,32 @@ def iter_elements(discr):
 
 
 def run_source_refinement_test(ctx_factory, mesh, order,
-        helmholtz_k=None, visualize=False):
+        helmholtz_k=None, visualize=True):
     cl_ctx = ctx_factory()
     queue = cl.CommandQueue(cl_ctx)
     actx = PyOpenCLArrayContext(queue)
 
     # {{{ initial geometry
 
-    from meshmode.discretization import Discretization
     from meshmode.discretization.poly_element import (
-            InterpolatoryQuadratureSimplexGroupFactory)
+            InterpolatoryQuadratureSimplexElementGroup,
+            GaussLegendreTensorProductElementGroup,
+            OrderAndTypeBasedGroupFactory)
+    from meshmode.discretization import Discretization
     discr = Discretization(actx, mesh,
-            InterpolatoryQuadratureSimplexGroupFactory(order))
+            OrderAndTypeBasedGroupFactory(
+                order,
+                simplex_group_class=InterpolatoryQuadratureSimplexElementGroup,
+                tensor_product_group_class=GaussLegendreTensorProductElementGroup
+                ))
 
     lpot_source = QBXLayerPotentialSource(discr,
             qbx_order=order,  # not used in refinement
             fine_order=order)
     places = GeometryCollection(lpot_source)
+
+    logger.info("nelements: %d", discr.mesh.nelements)
+    logger.info("ndofs: %d", discr.ndofs)
 
     # }}}
 
@@ -127,6 +137,15 @@ def run_source_refinement_test(ctx_factory, mesh, order,
             kernel_length_scale=kernel_length_scale,
             expansion_disturbance_tolerance=expansion_disturbance_tolerance,
             visualize=visualize)
+
+    if visualize:
+        dd = places.auto_source.to_stage2()
+        vis_discr = places.get_discretization(dd.geometry, dd.discr_stage)
+
+        from meshmode.discretization.visualization import make_visualizer
+        vis = make_visualizer(actx, vis_discr, order, force_equidistant=True)
+        vis.write_vtk_file(f"global-qbx-source-refinement-{order}.vtu", [
+            ], overwrite=True)
 
     # }}}
 
@@ -242,11 +261,12 @@ def test_source_refinement_2d(ctx_factory, curve_name, curve_f, nelements):
     run_source_refinement_test(ctx_factory, mesh, order, helmholtz_k)
 
 
-@pytest.mark.parametrize(("surface_name", "surface_f", "order"), [
-    ("sphere", partial(generate_icosphere, 1), 4),
-    ("torus", partial(generate_torus, 3, 1, n_minor=10, n_major=7), 6),
+@pytest.mark.parametrize(("surface_name", "order", "surface_f"), [
+    ("sphere", 4, partial(generate_icosphere, 1)),
+    ("torus", 6, partial(generate_torus, 3, 1, n_minor=10, n_major=7)),
+    ("spheroid_quad", 4, lambda order: QuadSpheroidTestCase().get_mesh(0.35, order))
     ])
-def test_source_refinement_3d(ctx_factory, surface_name, surface_f, order):
+def test_source_refinement_3d(ctx_factory, surface_name, order, surface_f):
     mesh = surface_f(order=order)
     run_source_refinement_test(ctx_factory, mesh, order)
 

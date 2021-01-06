@@ -24,6 +24,8 @@ import numpy as np
 
 from pytential import sym
 from pytools import RecordWithoutPickling, memoize_method
+from meshmode.discretization.poly_element import \
+        InterpolatoryQuadratureSimplexGroupFactory
 
 import logging
 logger = logging.getLogger(__name__)
@@ -86,6 +88,7 @@ class IntegralEquationTestCase(RecordWithoutPickling):
     source_ovsmp = 4
     target_order = None
     use_refinement = True
+    group_factory_cls = InterpolatoryQuadratureSimplexGroupFactory
 
     # fmm
     fmm_backend = "sumpy"
@@ -185,10 +188,8 @@ class IntegralEquationTestCase(RecordWithoutPickling):
         mesh = self.get_mesh(resolution, mesh_order)
 
         from meshmode.discretization import Discretization
-        from meshmode.discretization.poly_element import \
-                InterpolatoryQuadratureSimplexGroupFactory
         return Discretization(actx, mesh,
-                InterpolatoryQuadratureSimplexGroupFactory(self.target_order))
+                self.group_factory_cls(self.target_order))
 
     def get_layer_potential(self, actx, resolution, mesh_order):
         pre_density_discr = self.get_discretization(actx, resolution, mesh_order)
@@ -355,6 +356,31 @@ class SphereTestCase(IntegralEquationTestCase):
         from meshmode.mesh.generation import generate_icosphere
         return generate_icosphere(1.0, mesh_order,
                 uniform_refinement_rounds=resolution)
+
+
+class QuadSpheroidTestCase(SphereTestCase):
+    def get_mesh(self, resolution, mesh_order):
+        from meshmode.mesh.io import ScriptSource
+        script = ScriptSource("""
+            SetFactory("OpenCASCADE");
+            Sphere(1) = {0, 0, 0, %f};
+            Dilate { {0, 0, 0}, {1, 1, %f} } { Volume{1}; }
+
+            Mesh.CharacteristicLengthMax = %f;
+            Recombine Surface "*" = 0.0001;
+
+            """ % (1.0, 2.0, resolution), "geo")
+
+        from meshmode.mesh.io import generate_gmsh
+        mesh = generate_gmsh(script, 2, order=mesh_order,
+                other_options=[
+                    "-string", "Mesh.HighOrderOptimize = 2;",
+                    ])
+
+        # Flip elements--gmsh generates inside-out geometry.
+        # from meshmode.mesh.processing import perform_flips
+        # return perform_flips(mesh, np.ones(mesh.nelements))
+        return mesh
 
 
 class TorusTestCase(IntegralEquationTestCase):
