@@ -40,6 +40,8 @@ from arraycontext import pytest_generate_tests_for_array_contexts
 from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 
 from extra_curve_data import horseshoe
+from extra_int_eq_data import QuadSphereTestCase
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -81,16 +83,25 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
     # {{{ initial geometry
 
-    from meshmode.discretization import Discretization
     from meshmode.discretization.poly_element import (
-            InterpolatoryQuadratureSimplexGroupFactory)
+            InterpolatoryQuadratureSimplexElementGroup,
+            GaussLegendreTensorProductElementGroup,
+            OrderAndTypeBasedGroupFactory)
+    from meshmode.discretization import Discretization
     discr = Discretization(actx, mesh,
-            InterpolatoryQuadratureSimplexGroupFactory(order))
+            OrderAndTypeBasedGroupFactory(
+                order,
+                simplex_group_class=InterpolatoryQuadratureSimplexElementGroup,
+                tensor_product_group_class=GaussLegendreTensorProductElementGroup
+                ))
 
     lpot_source = QBXLayerPotentialSource(discr,
             qbx_order=order,  # not used in refinement
             fine_order=order)
     places = GeometryCollection(lpot_source)
+
+    logger.info("nelements: %d", discr.mesh.nelements)
+    logger.info("ndofs: %d", discr.ndofs)
 
     # }}}
 
@@ -104,6 +115,15 @@ def run_source_refinement_test(actx_factory, mesh, order,
             kernel_length_scale=kernel_length_scale,
             expansion_disturbance_tolerance=expansion_disturbance_tolerance,
             visualize=visualize)
+
+    if visualize:
+        dd = places.auto_source.to_stage2()
+        vis_discr = places.get_discretization(dd.geometry, dd.discr_stage)
+
+        from meshmode.discretization.visualization import make_visualizer
+        vis = make_visualizer(actx, vis_discr, order, force_equidistant=True)
+        vis.write_vtk_file(f"global-qbx-source-refinement-{order}.vtu", [
+            ], overwrite=True)
 
     # }}}
 
@@ -227,6 +247,7 @@ def test_source_refinement_2d(actx_factory, curve_name, curve_f, nelements):
 @pytest.mark.parametrize(("surface_name", "surface_f", "order"), [
     ("sphere", partial(mgen.generate_sphere, 1), 4),
     ("torus", partial(mgen.generate_torus, 3, 1, n_minor=10, n_major=7), 6),
+    ("spheroid_quad", lambda order: QuadSphereTestCase().get_mesh(0.35, order), 4)
     ])
 def test_source_refinement_3d(actx_factory, surface_name, surface_f, order):
     mesh = surface_f(order=order)

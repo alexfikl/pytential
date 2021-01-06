@@ -834,12 +834,6 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
     if force_stage2_uniform_refinement_rounds is None:
         force_stage2_uniform_refinement_rounds = 0
 
-    if group_factory is None:
-        from meshmode.discretization.poly_element import \
-                InterpolatoryQuadratureSimplexGroupFactory
-        group_factory = InterpolatoryQuadratureSimplexGroupFactory(
-                lpot_source.density_discr.groups[0].order)
-
     # }}}
 
     # {{{

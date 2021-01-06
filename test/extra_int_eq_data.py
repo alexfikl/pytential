@@ -24,6 +24,8 @@ import numpy as np
 
 from pytential import sym
 from pytools import RecordWithoutPickling, memoize_method
+from meshmode.discretization.poly_element import \
+        InterpolatoryQuadratureSimplexGroupFactory
 
 import logging
 logger = logging.getLogger(__name__)
@@ -91,6 +93,7 @@ class IntegralEquationTestCase(RecordWithoutPickling):
     source_ovsmp = 4
     target_order = None
     use_refinement = True
+    group_factory_cls = InterpolatoryQuadratureSimplexGroupFactory
 
     # fmm
     fmm_backend = "sumpy"
@@ -190,10 +193,8 @@ class IntegralEquationTestCase(RecordWithoutPickling):
         mesh = self.get_mesh(resolution, mesh_order)
 
         from meshmode.discretization import Discretization
-        from meshmode.discretization.poly_element import \
-                InterpolatoryQuadratureSimplexGroupFactory
         return Discretization(actx, mesh,
-                InterpolatoryQuadratureSimplexGroupFactory(self.target_order))
+                self.group_factory_cls(self.target_order))
 
     def get_layer_potential(self, actx, resolution, mesh_order):
         pre_density_discr = self.get_discretization(actx, resolution, mesh_order)
@@ -377,6 +378,15 @@ class SphereTestCase(IntegralEquationTestCase):
         from meshmode.mesh.generation import generate_sphere
         return generate_sphere(self.radius, mesh_order,
                 uniform_refinement_rounds=resolution)
+
+
+class QuadSphereTestCase(SphereTestCase):
+    def get_mesh(self, resolution, mesh_order):
+        from meshmode.mesh import TensorProductElementGroup
+        from meshmode.mesh.generation import generate_sphere
+        return generate_sphere(1.0, mesh_order,
+                uniform_refinement_rounds=resolution,
+                group_cls=TensorProductElementGroup)
 
 
 class SpheroidTestCase(SphereTestCase):
