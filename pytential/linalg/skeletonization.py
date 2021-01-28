@@ -311,6 +311,9 @@ def make_block_proxy_skeleton(actx, ibrow, ibcol,
     described by ``(ibrow, ibcol)``.
     """
 
+    if indices.nblocks == 1:
+        raise ValueError("cannot make a proxy skeleton for a single block")
+
     if source_or_target == "source":
         from pytential.target import PointsTarget as ProxyPoints
 
@@ -341,11 +344,6 @@ def make_block_proxy_skeleton(actx, ibrow, ibcol,
                 *swap_arg_order(pxy.indices, indices))
         pxymat = evaluate_farfield(actx, pxyplaces, ibrow, ibcol, pxyindices,
                 auto_where=swap_arg_order(domain, "proxy"))
-
-    if indices.nblocks == 1:
-        # NOTE: this doesn't really happen, because this function only gets
-        # called by skeletonize_block_by_proxy, which already takes care of it
-        return make_block_diag(pxymat, pxyindices.get(actx.queue))
 
     # }}}
 
