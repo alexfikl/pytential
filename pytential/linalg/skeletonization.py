@@ -134,9 +134,10 @@ class BlockEvaluationWrangler:
         :arg context: a :class:`dict` with additional parameters required to
             evaluated the expressions.
 
-        :arg weighted_farfield: a :class:`tuple` containing two :class:`bool`\ s
-            which turn on the weighing proxy interactions by the corresponding
-            quadrature weights.
+        :arg weighted_farfield: a ``Tuple[bool, bool]``, where the first
+            entry refers to the sources and the second to the targets. If
+            the entry is *True*, farfield evaluation is multiplied by quadrature
+            weights.
         :arg farfield_block_builder:
             a :class:`pytential.symbolic.matrix.MatrixBlockBuilderBase` that
             is used to evaluate farfield proxy interactions.
@@ -152,29 +153,11 @@ class BlockEvaluationWrangler:
         self.domains = domains
         self.context = context
 
-        if weighted_farfield is None:
-            weighted_source = True
-            weighted_target = False
-        elif isinstance(weighted_farfield, bool):
-            weighted_source = weighted_target = weighted_farfield
-        elif isinstance(weighted_farfield, (list, tuple)):
-            weighted_source, weighted_target = weighted_farfield
-        else:
-            raise ValueError("unknown value for weighting: `{}`".format(
-                weighted_farfield))
-
-        self.weighted_source = weighted_source
-        self.weighted_target = weighted_target
+        self.weighted_source = weighted_farfield[0]
+        self.weighted_target = weighted_farfield[1]
 
         self.nearfield_block_builder = nearfield_block_builder
-        if self.nearfield_block_builder is None:
-            from pytential.symbolic.matrix import NearFieldBlockBuilder
-            self.nearfield_block_builder = NearFieldBlockBuilder
-
         self.farfield_block_builder = farfield_block_builder
-        if self.farfield_block_builder is None:
-            from pytential.symbolic.matrix import FarFieldBlockBuilder
-            self.farfield_block_builder = FarFieldBlockBuilder
 
     def _prepare_farfield_expr(self, places, expr, auto_where=None):
         from pytential.symbolic.execution import _prepare_auto_where
@@ -262,12 +245,31 @@ def make_block_evaluation_wrangler(places, exprs, input_exprs,
     if context is None:
         context = {}
 
+    if _weighted_farfield is None:
+        weighted_source = True
+        weighted_target = False
+    elif isinstance(_weighted_farfield, bool):
+        weighted_source = weighted_target = _weighted_farfield
+    elif isinstance(_weighted_farfield, (list, tuple)):
+        weighted_source, weighted_target = _weighted_farfield
+    else:
+        raise ValueError("unknown value for weighting: `{}`".format(
+            _weighted_farfield))
+
+    if _nearfield_block_builder is None:
+        from pytential.symbolic.matrix import NearFieldBlockBuilder
+        _nearfield_block_builder = NearFieldBlockBuilder
+
+    if _farfield_block_builder is None:
+        from pytential.symbolic.matrix import FarFieldBlockBuilder
+        _farfield_block_builder = FarFieldBlockBuilder
+
     return BlockEvaluationWrangler(
             exprs=exprs,
             input_exprs=input_exprs,
             domains=domains,
             context=context,
-            weighted_farfield=_weighted_farfield,
+            weighted_farfield=(weighted_source, weighted_target),
             farfield_block_builder=_farfield_block_builder,
             nearfield_block_builder=_nearfield_block_builder)
 
