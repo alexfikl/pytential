@@ -92,7 +92,7 @@ def partition_by_nodes(actx, discr,
         leaf_boxes, = (tree.box_flags
                        & box_flags_enum.HAS_CHILDREN == 0).nonzero()
 
-        indices = np.empty(len(leaf_boxes), dtype=np.object)
+        indices = np.empty(len(leaf_boxes), dtype=object)
         ranges = None
 
         for i, ibox in enumerate(leaf_boxes):
@@ -106,8 +106,8 @@ def partition_by_nodes(actx, discr,
 
         nblocks = max(discr.ndofs // max_particles_in_box, 2)
 
-        indices = np.arange(0, discr.ndofs, dtype=np.int)
-        ranges = np.linspace(0, discr.ndofs, nblocks + 1, dtype=np.int)
+        indices = np.arange(0, discr.ndofs, dtype=np.int64)
+        ranges = np.linspace(0, discr.ndofs, nblocks + 1, dtype=np.int64)
         assert ranges[-1] == discr.ndofs
 
     return make_block_index(actx, indices, ranges=ranges)
@@ -294,10 +294,10 @@ class ProxyGenerator:
                          {dup=idim}
                 <> rqbx = rqbx_int if rqbx_ext < rqbx_int else rqbx_ext
             """ if self.radius_factor > 1.0e-14 else "<> rqbx = 0.0")
-            + """
+            + f"""
                 proxy_radius[irange] = {radius_expr}
             end
-            """.format(radius_expr=radius_expr),
+            """,
             ([] if self.radius_factor < 1.0e-14 else [
                 lp.GlobalArg("center_int", None,
                     shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
@@ -310,7 +310,7 @@ class ProxyGenerator:
                     shape=(self.ambient_dim, "nranges")),
                 lp.GlobalArg("proxy_radius", None,
                     shape="nranges"),
-                lp.ValueArg("nsources", np.int),
+                lp.ValueArg("nsources", np.int64),
                 "..."
             ],
             name="find_proxy_radii_knl",
@@ -474,7 +474,7 @@ def gather_block_neighbor_points(actx, discr, indices, pxy,
     pxycenters = np.vstack([actx.to_numpy(c) for c in pxy.centers])
     pxyradii = actx.to_numpy(pxy.radii)
 
-    nbrindices = np.empty(indices.nblocks, dtype=np.object)
+    nbrindices = np.empty(indices.nblocks, dtype=object)
     for iproxy in range(indices.nblocks):
         # get list of boxes intersecting the current ball
         istart = query.leaves_near_ball_starts[iproxy]

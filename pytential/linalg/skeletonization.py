@@ -93,10 +93,10 @@ class LocationReplacer(LocationTagger):
 
     def map_int_g(self, expr):
         return type(expr)(
-                expr.kernel,
-                self.operand_rec(expr.density),
-                expr.qbx_forced_limit,
-                self.default_source, self.default_where,
+                expr.target_kernel, expr.source_kernels,
+                densities=self.operand_rec(expr.densities),
+                qbx_forced_limit=expr.qbx_forced_limit,
+                source=self.default_source, target=self.default_where,
                 kernel_arguments=dict(
                     (name, self.operand_rec(arg_expr))
                     for name, arg_expr in expr.kernel_arguments.items()
