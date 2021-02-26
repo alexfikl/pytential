@@ -443,10 +443,10 @@ class P2PMatrixBuilder(MatrixBuilderBase):
         mat_gen = P2PMatrixGenerator(actx.context, (kernel,),
                 exclude_self=self.exclude_self)
 
-        from meshmode.dof_array import flatten, thaw
+        from pytential.utils import flatten_if_needed
         _, (mat,) = mat_gen(actx.queue,
-                targets=flatten(thaw(actx, target_discr.nodes())),
-                sources=flatten(thaw(actx, source_discr.nodes())),
+                targets=flatten_if_needed(actx, target_discr.nodes()),
+                sources=flatten_if_needed(actx, source_discr.nodes()),
                 **kernel_args)
         mat = actx.to_numpy(mat)
 
@@ -456,6 +456,7 @@ class P2PMatrixBuilder(MatrixBuilderBase):
                 source_discr.ambient_dim,
                 dofdesc=expr.source))(self.array_context)
 
+            from meshmode.dof_array import flatten
             mat[:, :] *= actx.to_numpy(flatten(waa))
 
         return mat.dot(rec_density)
