@@ -119,6 +119,11 @@ def partition_by_nodes(actx, discr,
 
 class BlockProxyPoints(DeviceDataRecord):
     """
+    .. attribute:: srcindices
+
+        A :class:`~sumpy.tools.BlockIndexRanges` describing which block of
+        points each proxy ball was created from.
+
     .. attribute:: indices
 
         A :class:`~sumpy.tools.BlockIndexRanges` describing which proxies
@@ -420,6 +425,7 @@ class ProxyGenerator:
 
         assert proxies[0].size == pxyranges[-1]
         return BlockProxyPoints(
+                srcindices=indices,
                 indices=make_block_index(actx, pxyindices, pxyranges),
                 points=proxies,
                 centers=centers,
@@ -432,7 +438,7 @@ class ProxyGenerator:
 # {{{ gather_block_neighbor_points
 
 def gather_block_neighbor_points(actx, discr, indices, pxy,
-        max_particles_in_box=None):
+        max_particles_in_box=None, isself=True):
     """Generate a set of neighboring points for each range of points in
     *discr*. Neighboring points of a range :math:`i` are defined
     as all the points inside the proxy ball :math:`i` that do not also
@@ -481,20 +487,29 @@ def gather_block_neighbor_points(actx, discr, indices, pxy,
         iend = query.leaves_near_ball_starts[iproxy + 1]
         iboxes = query.leaves_near_ball_lists[istart:iend]
 
+        if (iend - istart) <= 0:
+            nbrindices[iproxy] = np.empty(0, dtype=np.int64)
+            continue
+
         # get nodes inside the boxes
         istart = tree.box_source_starts[iboxes]
         iend = istart + tree.box_source_counts_cumul[iboxes]
-        isources = np.hstack([np.arange(s, e)
-                              for s, e in zip(istart, iend)])
+        isources = np.hstack([np.arange(s, e) for s, e in zip(istart, iend)])
         nodes = np.vstack([s[isources] for s in tree.sources])
         isources = tree.user_source_ids[isources]
 
         # get nodes inside the ball but outside the current range
         center = pxycenters[:, iproxy].reshape(-1, 1)
         radius = pxyradii[iproxy]
-        mask = ((la.norm(nodes - center, axis=0) < radius)
-                & ((isources < indices.ranges[iproxy])
-                    | (indices.ranges[iproxy + 1] <= isources)))
+
+        if isself:
+            mask = ((la.norm(nodes - center, axis=0) < radius)
+                    & ((isources < indices.ranges[iproxy])
+                        | (isources >= indices.ranges[iproxy + 1])))
+        else:
+            mask = ((la.norm(nodes - center, axis=0) < radius)
+                    & (isources > indices.ranges[iproxy])
+                    & (isources <= indices.ranges[iproxy + 1]))
 
         nbrindices[iproxy] = indices.indices[isources[mask]]
 

@@ -415,6 +415,85 @@ def test_neighbor_points(ctx_factory, case,
 # }}}
 
 
+# {{{ test_nonintersecting_neighbor_points
+
+def make_index_subset(actx, indices, subset):
+    rindices = [indices.block_indices(i) for i in subset]
+    ranges = np.cumsum([0] + [r.size for r in rindices])
+
+    import pyopencl.array as cl
+    from sumpy.tools import BlockIndexRanges
+    return BlockIndexRanges(actx.queue.context,
+            indices=actx.freeze(cl.concatenate(rindices, queue=actx.queue)),
+            ranges=actx.freeze(actx.from_numpy(ranges)),
+            )
+
+
+@pytest.mark.parametrize("proxy_radius_factor", [0.5, 1.5])
+def test_nonintersecting_neighbor_points(ctx_factory, proxy_radius_factor,
+        visualize=False):
+    """Tests that neighboring point sets are empty when the blocks don't
+    actually intersect.
+    """
+
+    ctx = ctx_factory()
+    queue = cl.CommandQueue(ctx)
+    actx = PyOpenCLArrayContext(queue)
+    case = PROXY_TEST_CASES[0].copy(
+            tree_kind=None,
+            )
+
+    logger.info("\n%s", case)
+
+    # {{{ check neighboring points
+
+    qbx = case.get_layer_potential(actx, case.resolutions[-1], case.target_order)
+    places = GeometryCollection(qbx, auto_where=case.name)
+    dofdesc = places.auto_source
+
+    density_discr = places.get_discretization(case.name)
+    srcindices = case.get_block_indices(actx, density_discr, matrix_indices=False)
+
+    # NOTE: from tree_kind=None above, the indices are actually in order, so
+    # `1` will be right next to `0` and the other ones are disjoint
+    tgtindices = make_index_subset(actx, srcindices, [1, 2, 3, 4, 5])
+    srcindices = make_index_subset(actx, srcindices, [0] * tgtindices.nblocks)
+
+    # generate proxy points
+    from pytential.linalg.proxy import ProxyGenerator
+    proxies = ProxyGenerator(places,
+            radius_factor=case.proxy_radius_factor,
+            approx_nproxy=case.proxy_approx_count)
+    proxies = proxies(actx, dofdesc, srcindices)
+
+    # get neighboring points
+    from pytential.linalg.proxy import gather_block_neighbor_points
+    nbrindices = gather_block_neighbor_points(actx,
+            density_discr, tgtindices, proxies,
+            isself=False)
+
+    tgtindices = tgtindices.get(queue)
+    srcindices = srcindices.get(queue)
+    nbrindices = nbrindices.get(queue)
+
+    proxies = proxies.get(queue)
+    pxycenters = np.vstack(proxies.centers)
+    nodes = np.vstack(flatten_to_numpy(actx, density_discr.nodes()))
+
+    for i in range(srcindices.nblocks):
+        inbr = nbrindices.block_indices(i)
+
+        # NOTE: only the first block intersects the geometry
+        if i == 0:
+            assert inbr.size != 0
+        else:
+            assert inbr.size == 0
+
+    # }}}
+
+# }}}
+
+
 # {{{ test_skeletonize_by_proxy
 
 def _plot_skeleton_with_proxies(name, sources, pxy, isrc, iskl):
