@@ -39,6 +39,7 @@ Proxy Point Generation
 ~~~~~~~~~~~~~~~~~~~~~~
 
 .. autoclass:: ProxyGenerator
+.. autoclass:: QBXProxyGenerator
 .. autoclass:: BlockProxyPoints
 
 .. autofunction:: partition_by_nodes
@@ -207,24 +208,8 @@ class ProxyGenerator:
 
     .. attribute:: radius_factor
 
-        A factor used to compute the proxy ball radius. The radius
-        is computed in the :math:`\ell^2` norm, resulting in a circle or
-        sphere of proxy points. For QBX, we have two radii of interest
-        for a set of points: the radius :math:`r_{block}` of the
-        smallest ball containing all the points and the radius
-        :math:`r_{qbx}` of the smallest ball containing all the QBX
-        expansion balls in the block. If the factor :math:`\theta \in
-        [0, 1]`, then the radius of the proxy ball is
-
-        .. math::
-
-            r = (1 - \theta) r_{block} + \theta r_{qbx}.
-
-        If the factor :math:`\theta > 1`, the the radius is simply
-
-        .. math::
-
-            r = \theta r_{qbx}.
+        Factor multiplying the block radius (i.e radius of the bounding box)
+        to get the proxy ball radius.
 
     .. attribute:: ref_points
 
@@ -235,7 +220,10 @@ class ProxyGenerator:
     .. automethod:: __call__
     """
 
-    def __init__(self, places, approx_nproxy=None, radius_factor=None):
+    def __init__(self, places,
+            approx_nproxy=None,
+            radius_factor=None,
+            norm_type="linf"):
         from pytential import GeometryCollection
         if not isinstance(places, GeometryCollection):
             places = GeometryCollection(places)
@@ -243,6 +231,7 @@ class ProxyGenerator:
         self.places = places
         self.ambient_dim = places.ambient_dim
         self.radius_factor = 1.1 if radius_factor is None else radius_factor
+        self.norm_type = norm_type
 
         approx_nproxy = 32 if approx_nproxy is None else approx_nproxy
         self.ref_points = \
@@ -254,17 +243,40 @@ class ProxyGenerator:
 
     # {{{ proxy ball kernels
 
-    @memoize_method
-    def get_kernel(self):
-        if self.radius_factor < 1.0:
-            radius_expr = "(1.0 - {f}) * rblk + {f} * rqbx"
-        else:
-            radius_expr = "{f} * rqbx"
-        radius_expr = radius_expr.format(f=self.radius_factor)
+    def _proxy_center_insns(self):
+        if self.norm_type == "l2":
+            return """
+            proxy_center[idim, irange] = 1.0 / npoints \
+                    * simul_reduce(sum, i, sources[idim, srcindices[i + ioffset]])
+            """
+        elif self.norm_type == "linf":
+            return """
+            <> bbox_max = \
+                    simul_reduce(max, i, sources[idim, srcindices[i + ioffset]])
+            <> bbox_min = \
+                    simul_reduce(min, i, sources[idim, srcindices[i + ioffset]])
 
+            proxy_center[idim, irange] = (bbox_max + bbox_min) / 2.0
+            """
+        else:
+            raise ValueError(f"unknown norm type: '{self.norm_type}'")
+
+    def _proxy_radius_insns(self):
+        return """
+        <> rblk = reduce(max, j, sqrt(simul_reduce(sum, idim, \
+                (proxy_center[idim, irange]
+                - sources[idim, srcindices[j + ioffset]]) ** 2)
+                  )) {dup=idim}
+        <> pxyradius = %s * rblk
+        """ % self.radius_factor
+
+    def _extra_kernel_arguments(self):
+        return []
+
+    def get_kernel(self):
         knl = lp.make_kernel([
             "{[irange]: 0 <= irange < nranges}",
-            "{[i]: 0 <= i < npoints}", "{[j]: 0 <= j < npoints}",
+            "{[i, j]: 0 <= i, j < npoints}",
             "{[idim]: 0 <= idim < ndim}"
             ],
             """
@@ -273,51 +285,21 @@ class ProxyGenerator:
                 <> npoints = srcranges[irange + 1] - srcranges[irange]
 
                 for idim
-                    <> bbox_max = \
-                        simul_reduce(max, i, sources[idim, srcindices[i + ioffset]])
-                    <> bbox_min = \
-                        simul_reduce(min, i, sources[idim, srcindices[i + ioffset]])
-
-                    proxy_center[idim, irange] = (bbox_max + bbox_min) / 2.0
+                    %(centers)s
                 end
 
-                <> rblk = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
-                        (proxy_center[idim, irange] -
-                         sources[idim, srcindices[j + ioffset]]) ** 2))) \
-                        {dup=idim}
-            """
-            + ("""
-                <> rqbx_int = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
-                        (proxy_center[idim, irange] -
-                         center_int[idim, srcindices[j + ioffset]]) ** 2)) + \
-                         expansion_radii[srcindices[j + ioffset]]) \
-                         {dup=idim}
-                <> rqbx_ext = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
-                        (proxy_center[idim, irange] -
-                         center_ext[idim, srcindices[j + ioffset]]) ** 2)) + \
-                         expansion_radii[srcindices[j + ioffset]]) \
-                         {dup=idim}
-                <> rqbx = rqbx_int if rqbx_ext < rqbx_int else rqbx_ext
-            """ if self.radius_factor > 1.0e-14 else "<> rqbx = 0.0")
-            + f"""
-                proxy_radius[irange] = {radius_expr}
+                %(radius)s
+                proxy_radius[irange] = pxyradius
             end
-            """,
-            ([] if self.radius_factor < 1.0e-14 else [
-                lp.GlobalArg("center_int", None,
-                    shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
-                lp.GlobalArg("center_ext", None,
-                    shape=(self.ambient_dim, "nsources"), dim_tags="sep,C")
-            ]) + [
-                lp.GlobalArg("sources", None,
-                    shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
-                lp.GlobalArg("proxy_center", None,
-                    shape=(self.ambient_dim, "nranges")),
-                lp.GlobalArg("proxy_radius", None,
-                    shape="nranges"),
-                lp.ValueArg("nsources", np.int64),
-                "..."
-            ],
+            """ % dict(
+                centers=self._proxy_center_insns(),
+                radius=self._proxy_radius_insns(),
+                ), self._extra_kernel_arguments() + [
+                    lp.GlobalArg("sources", None,
+                        shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
+                    lp.ValueArg("nsources", np.int64),
+                    "..."
+                    ],
             name="find_proxy_radii_knl",
             assumptions="ndim>=1 and nranges>=1",
             fixed_parameters=dict(ndim=self.ambient_dim),
@@ -334,32 +316,19 @@ class ProxyGenerator:
         return knl
 
     def _get_proxy_centers_and_radii(self, actx, source_dd, indices, **kwargs):
-        from pytential import bind, sym
+        from pytential import sym
         source_dd = sym.as_dofdesc(source_dd)
         discr = self.places.get_discretization(
                 source_dd.geometry, source_dd.discr_stage)
 
-        from meshmode.dof_array import flatten, thaw
-        context = {
-                "sources": flatten(thaw(actx, discr.nodes())),
-                "srcindices": indices.indices,
-                "srcranges": indices.ranges
-                }
-
-        if self.radius_factor > 1.0e-14:
-            radii = bind(self.places, sym.expansion_radii(
-                self.ambient_dim, dofdesc=source_dd))(actx)
-            center_int = bind(self.places, sym.expansion_centers(
-                self.ambient_dim, -1, dofdesc=source_dd))(actx)
-            center_ext = bind(self.places, sym.expansion_centers(
-                self.ambient_dim, +1, dofdesc=source_dd))(actx)
-
-            context["center_int"] = flatten(center_int)
-            context["center_ext"] = flatten(center_ext)
-            context["expansion_radii"] = flatten(radii)
-
         knl = self.get_kernel()
-        _, (centers, radii,) = knl(actx.queue, **context, **kwargs)
+
+        from meshmode.dof_array import flatten, thaw
+        _, (centers, radii,) = knl(actx.queue,
+                sources=flatten(thaw(actx, discr.nodes())),
+                srcindices=indices.indices,
+                srcranges=indices.ranges,
+                **kwargs)
 
         return centers, radii
 
@@ -432,6 +401,92 @@ class ProxyGenerator:
                 radii=actx.freeze(radii_dev),
                 )
 
+
+class QBXProxyGenerator(ProxyGenerator):
+    r"""
+    .. attribute:: radius_factor
+
+        A factor used to compute the proxy ball radius. The radius
+        is computed in the :math:`\ell^2` norm, resulting in a circle or
+        sphere of proxy points. For QBX, we have two radii of interest
+        for a set of points: the radius :math:`r_{block}` of the
+        smallest ball containing all the points and the radius
+        :math:`r_{qbx}` of the smallest ball containing all the QBX
+        expansion balls in the block. If the factor :math:`\theta \in
+        [0, 1]`, then the radius of the proxy ball is
+
+        .. math::
+
+            r = (1 - \theta) r_{block} + \theta r_{qbx}.
+
+        If the factor :math:`\theta > 1`, the the radius is simply
+
+        .. math::
+
+            r = \theta r_{qbx}.
+    """
+
+    def _proxy_radius_insns(self):
+        if self.radius_factor < 1.0:
+            expr = "(1.0 - {0}) * rblk + {0} * rqbx".format(self.radius_factor)
+        else:
+            expr = "{} * rqbx".format(self.radius_factor)
+
+        return """
+        <> rblk = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
+                (proxy_center[idim, irange] -
+                 sources[idim, srcindices[j + ioffset]]) ** 2))) \
+                {dup=idim}
+        <> rqbx_int = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
+                (proxy_center[idim, irange] -
+                 center_int[idim, srcindices[j + ioffset]]) ** 2)) + \
+                 expansion_radii[srcindices[j + ioffset]]) \
+                 {dup=idim}
+        <> rqbx_ext = simul_reduce(max, j, sqrt(simul_reduce(sum, idim, \
+                (proxy_center[idim, irange] -
+                 center_ext[idim, srcindices[j + ioffset]]) ** 2)) + \
+                 expansion_radii[srcindices[j + ioffset]]) \
+                 {dup=idim}
+        <> rqbx = rqbx_int if rqbx_ext < rqbx_int else rqbx_ext
+
+        <> pxyradius = %s
+        """ % expr
+
+    def _extra_kernel_arguments(self):
+        return [
+                lp.GlobalArg("center_int", None,
+                    shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
+                lp.GlobalArg("center_ext", None,
+                    shape=(self.ambient_dim, "nsources"), dim_tags="sep,C"),
+                ]
+
+    def _get_proxy_centers_and_radii(self, actx, source_dd, indices, **kwargs):
+        from pytential import bind, sym
+        source_dd = sym.as_dofdesc(source_dd)
+        discr = self.places.get_discretization(
+                source_dd.geometry, source_dd.discr_stage)
+
+        knl = self.get_kernel()
+
+        from meshmode.dof_array import flatten, thaw
+        radii = bind(self.places, sym.expansion_radii(
+            self.ambient_dim, dofdesc=source_dd))(actx)
+        center_int = bind(self.places, sym.expansion_centers(
+            self.ambient_dim, -1, dofdesc=source_dd))(actx)
+        center_ext = bind(self.places, sym.expansion_centers(
+            self.ambient_dim, +1, dofdesc=source_dd))(actx)
+
+        _, (centers, radii,) = knl(actx.queue,
+                sources=flatten(thaw(actx, discr.nodes())),
+                srcindices=indices.indices,
+                srcranges=indices.ranges,
+                expansion_radii=flatten(radii),
+                center_int=flatten(center_int),
+                center_ext=flatten(center_ext),
+                **kwargs)
+
+        return centers, radii
+
 # }}}
 
 
@@ -479,6 +534,7 @@ def gather_block_neighbor_points(actx, discr, indices, pxy,
 
     pxycenters = np.vstack([actx.to_numpy(c) for c in pxy.centers])
     pxyradii = actx.to_numpy(pxy.radii)
+    srcindices = pxy.srcindices.get(actx.queue)
 
     nbrindices = np.empty(indices.nblocks, dtype=object)
     for iproxy in range(indices.nblocks):
@@ -504,12 +560,12 @@ def gather_block_neighbor_points(actx, discr, indices, pxy,
 
         if isself:
             mask = ((la.norm(nodes - center, axis=0) < radius)
-                    & ((isources < indices.ranges[iproxy])
-                        | (isources >= indices.ranges[iproxy + 1])))
+                    & ((isources < srcindices.ranges[iproxy])
+                        | (isources >= srcindices.ranges[iproxy + 1])))
         else:
             mask = ((la.norm(nodes - center, axis=0) < radius)
-                    & (isources > indices.ranges[iproxy])
-                    & (isources <= indices.ranges[iproxy + 1]))
+                    & (isources >= indices.ranges[iproxy])
+                    & (isources < indices.ranges[iproxy + 1]))
 
         nbrindices[iproxy] = indices.indices[isources[mask]]
 

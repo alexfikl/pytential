@@ -183,8 +183,8 @@ def test_proxy_generator(ctx_factory, case,
     density_discr = places.get_discretization(case.name)
     srcindices = case.get_block_indices(actx, density_discr, matrix_indices=False)
 
-    from pytential.linalg.proxy import ProxyGenerator
-    proxies = ProxyGenerator(places,
+    from pytential.linalg.proxy import QBXProxyGenerator
+    proxies = QBXProxyGenerator(places,
             radius_factor=case.proxy_radius_factor,
             approx_nproxy=case.proxy_approx_count)(
                     actx, places.auto_source, srcindices)
@@ -319,8 +319,8 @@ def test_neighbor_points(ctx_factory, case,
     srcindices = case.get_block_indices(actx, density_discr, matrix_indices=False)
 
     # generate proxy points
-    from pytential.linalg.proxy import ProxyGenerator
-    proxies = ProxyGenerator(places,
+    from pytential.linalg.proxy import QBXProxyGenerator
+    proxies = QBXProxyGenerator(places,
             radius_factor=case.proxy_radius_factor,
             approx_nproxy=case.proxy_approx_count)(
                     actx, places.auto_source, srcindices)
@@ -423,7 +423,8 @@ def make_index_subset(actx, indices, subset):
 
     import pyopencl.array as cl
     from sumpy.tools import BlockIndexRanges
-    return BlockIndexRanges(actx.queue.context,
+    return BlockIndexRanges(
+            actx.queue.context,
             indices=actx.freeze(cl.concatenate(rindices, queue=actx.queue)),
             ranges=actx.freeze(actx.from_numpy(ranges)),
             )
@@ -460,8 +461,8 @@ def test_nonintersecting_neighbor_points(ctx_factory, proxy_radius_factor,
     srcindices = make_index_subset(actx, srcindices, [0] * tgtindices.nblocks)
 
     # generate proxy points
-    from pytential.linalg.proxy import ProxyGenerator
-    proxies = ProxyGenerator(places,
+    from pytential.linalg.proxy import QBXProxyGenerator
+    proxies = QBXProxyGenerator(places,
             radius_factor=case.proxy_radius_factor,
             approx_nproxy=case.proxy_approx_count)
     proxies = proxies(actx, dofdesc, srcindices)
@@ -477,9 +478,6 @@ def test_nonintersecting_neighbor_points(ctx_factory, proxy_radius_factor,
     nbrindices = nbrindices.get(queue)
 
     proxies = proxies.get(queue)
-    pxycenters = np.vstack(proxies.centers)
-    nodes = np.vstack(flatten_to_numpy(actx, density_discr.nodes()))
-
     for i in range(srcindices.nblocks):
         inbr = nbrindices.block_indices(i)
 
@@ -547,9 +545,9 @@ def test_skeletonize_by_proxy(ctx_factory, case, visualize=False):
 
     # {{{ wranglers
 
-    from pytential.linalg.proxy import ProxyGenerator
+    from pytential.linalg.proxy import QBXProxyGenerator
     from pytential.linalg.skeletonization import make_block_evaluation_wrangler
-    proxy_generator = ProxyGenerator(places,
+    proxy_generator = QBXProxyGenerator(places,
             radius_factor=case.proxy_radius_factor,
             approx_nproxy=case.proxy_approx_count)
 
