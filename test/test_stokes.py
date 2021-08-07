@@ -20,31 +20,31 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import numpy as np
-import pyopencl as cl
+import pytest
 
-from arraycontext import PyOpenCLArrayContext
+import numpy as np
+
+from pytential import GeometryCollection, bind, sym
 from meshmode.discretization import Discretization
 from meshmode.discretization.poly_element import \
         InterpolatoryQuadratureSimplexGroupFactory
-
 from pytools.obj_array import make_obj_array
 
-from pytential import bind, sym
-from pytential import GeometryCollection
-
-import pytest
-from pyopencl.tools import (  # noqa
-        pytest_generate_tests_for_pyopencl
-        as pytest_generate_tests)
+from meshmode import _acf           # noqa: F401
+from arraycontext import pytest_generate_tests_for_array_contexts
+from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 
 import logging
 logger = logging.getLogger(__name__)
 
+pytest_generate_tests = pytest_generate_tests_for_array_contexts([
+    PytestPyOpenCLArrayContextFactory,
+    ])
+
 
 # {{{ test_exterior_stokes
 
-def run_exterior_stokes(ctx_factory, *,
+def run_exterior_stokes(actx_factory, *,
         ambient_dim, target_order, qbx_order, resolution,
         fmm_order=None,    # FIXME: FMM is slower than direct evaluation
         source_ovsmp=None,
@@ -56,10 +56,7 @@ def run_exterior_stokes(ctx_factory, *,
 
         _target_association_tolerance=0.05,
         _expansions_in_tree_have_extent=True):
-    cl_ctx = cl.create_some_context()
-    queue = cl.CommandQueue(cl_ctx,
-            properties=cl.command_queue_properties.PROFILING_ENABLE)
-    actx = PyOpenCLArrayContext(queue)
+    actx = actx_factory()
 
     # {{{ geometry
 
@@ -184,7 +181,7 @@ def run_exterior_stokes(ctx_factory, *,
 
     if ambient_dim == 2:
         total_charge = make_obj_array([
-            actx.np.sum(c) for c in charges
+            actx.to_numpy(actx.np.sum(c)) for c in charges
             ])
         omega = bind(places, total_charge * sym.Ones())(actx)
 
@@ -219,10 +216,10 @@ def run_exterior_stokes(ctx_factory, *,
         total = 0
         for k, timing in timings.items():
             for k, v in timing.items():
-                result[k] += v['wall_elapsed']
-                total += v['wall_elapsed']
-        result['total'] = total
-        print(f"{name}={result}")
+                result[k] += v["wall_elapsed"]
+                total += v["wall_elapsed"]
+        result["total"] = total
+        print(f"{name} = {result}")
 
     print_timing_data(fmm_timing_data, method)
     # {{{ solve
@@ -249,7 +246,7 @@ def run_exterior_stokes(ctx_factory, *,
             y_norm = 1.0
 
         d = x - y
-        return actx.np.linalg.norm(d.dot(d), ord=2) / y_norm
+        return actx.to_numpy(actx.np.linalg.norm(d.dot(d), ord=2) / y_norm)
 
     ps_velocity = bind(places, sym_velocity,
             auto_where=("source", "point_target"))(actx, sigma=sigma, **op_context)
@@ -258,7 +255,9 @@ def run_exterior_stokes(ctx_factory, *,
                     **direct_context)
 
     v_error = rnorm2(ps_velocity, ex_velocity)
-    h_max = bind(places, sym.h_max(ambient_dim))(actx)
+    h_max = actx.to_numpy(
+            bind(places, sym.h_max(ambient_dim))(actx)
+            )
 
     logger.info("resolution %4d h_max %.5e error %.5e",
             resolution, h_max, v_error)
@@ -286,6 +285,7 @@ def run_exterior_stokes(ctx_factory, *,
 
     return h_max, v_error
 
+
 @pytest.mark.parametrize("ambient_dim, method, nu", [
     (2, "naive", 0.5),
     (2, "biharmonic", 0.5),
@@ -297,7 +297,7 @@ def run_exterior_stokes(ctx_factory, *,
     (3, "biharmonic", 0.4),
     (3, "laplace", 0.4),
     ])
-def test_exterior_stokes(ctx_factory, ambient_dim, method, nu, visualize=False):
+def test_exterior_stokes(actx_factory, ambient_dim, method, nu, visualize=False):
     if visualize:
         logging.basicConfig(level=logging.INFO)
 
@@ -317,7 +317,7 @@ def test_exterior_stokes(ctx_factory, ambient_dim, method, nu, visualize=False):
         raise ValueError(f"unsupported dimension: {ambient_dim}")
 
     for resolution in resolutions:
-        h_max, err = run_exterior_stokes(ctx_factory,
+        h_max, err = run_exterior_stokes(actx_factory,
                 ambient_dim=ambient_dim,
                 target_order=target_order,
                 fmm_order=fmm_order,

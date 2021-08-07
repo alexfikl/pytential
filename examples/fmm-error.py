@@ -1,7 +1,8 @@
 import numpy as np
 import pyopencl as cl
 
-from arraycontext import PyOpenCLArrayContext, thaw
+from arraycontext import thaw
+from meshmode.array_context import PyOpenCLArrayContext
 from meshmode.mesh.generation import (  # noqa
         make_curve_mesh, starfish, ellipse, drop)
 
@@ -15,7 +16,7 @@ def main():
 
     cl_ctx = cl.create_some_context()
     queue = cl.CommandQueue(cl_ctx)
-    actx = PyOpenCLArrayContext(queue)
+    actx = PyOpenCLArrayContext(queue, force_device_scalars=True)
 
     target_order = 16
     qbx_order = 3
@@ -57,7 +58,7 @@ def main():
         "unaccel_qbx": unaccel_qbx,
         "qbx": unaccel_qbx.copy(fmm_order=10),
         "targets": PointsTarget(actx.freeze(actx.from_numpy(fplot.points)))
-        })
+        }, auto_where=("qbx", "targets"))
     density_discr = places.get_discretization("unaccel_qbx")
 
     nodes = thaw(density_discr.nodes(), actx)
