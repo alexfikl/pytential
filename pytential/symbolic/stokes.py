@@ -270,7 +270,7 @@ class StokesletWrapper(StokesletWrapperBase):
         for i in range(dim):
             for j in range(i, dim):
                 self.kernel_dict[(i, j)] = ElasticityKernel(dim=dim, icomp=i,
-                    jcomp=j, viscosity_mu=mu_sym, poisson_ratio=nu_sym)
+                    jcomp=j, viscosity_mu=mu_sym.name, poisson_ratio=nu_sym)
 
         # The dictionary allows us to exploit symmetry -- that
         # :math:`T_{01}` is identical to :math:`T_{10}` -- and avoid creating
@@ -313,7 +313,7 @@ class StokesletWrapper(StokesletWrapperBase):
 
         # For stokeslet, there's no direction vector involved
         # passing a list of ones instead to remove its usage.
-        dir_vec_sym = [1] * self.dim
+        knl_dir_vec_sym = [1] * self.dim
 
         sym_expr = np.zeros((self.dim,), dtype=object)
         for comp in range(self.dim):
@@ -321,7 +321,7 @@ class StokesletWrapper(StokesletWrapperBase):
                 for j in range(self.dim):
                     sym_expr[comp] += dir_vec_sym[i] * \
                         stresslet_obj.get_int_g((comp, i, j),
-                        density_vec_sym[j], dir_vec_sym,
+                        density_vec_sym[j], knl_dir_vec_sym,
                         qbx_forced_limit, deriv_dirs=[])
 
         return sym_expr
@@ -359,8 +359,9 @@ class StressletWrapper(StressletWrapperBase):
         for i in range(dim):
             for j in range(i, dim):
                 for k in range(j, dim):
-                    self.kernel_dict[(i, j, k)] = StressletKernel(dim=dim, icomp=i,
-                                                                  jcomp=j, kcomp=k)
+                    self.kernel_dict[(i, j, k)] = StressletKernel(
+                            dim=dim, icomp=i, jcomp=j, kcomp=k,
+                            viscosity_mu=mu_sym.name)
 
         # The dictionary allows us to exploit symmetry -- that
         # :math:`T_{012}` is identical to :math:`T_{120}` -- and avoid creating
@@ -399,6 +400,7 @@ class StressletWrapper(StressletWrapperBase):
         result = 0
         for kernel_idx, dir_vec_idx, coeff, extra_deriv_dirs in \
                 zip(kernel_indices, dir_vec_indices, coeffs,
+
                         extra_deriv_dirs_vec):
             knl = self.kernel_dict[kernel_idx]
             result += _create_int_g(knl, deriv_dirs + extra_deriv_dirs,
@@ -601,7 +603,6 @@ class StokesletWrapperTornberg(StokesletWrapperBase):
         return stresslet.apply_stokeslet_and_stresslet(density_vec_sym,
             [0]*self.dim, [0]*self.dim, qbx_forced_limit, 1, 0,
             extra_deriv_dirs)
-
 
 # }}}
 

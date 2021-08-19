@@ -414,7 +414,7 @@ class Code:
                     context[target] = value
 
         if len(done_insns) < len(self.instructions):
-            print("Unreachable instructions:")
+            # print("Unreachable instructions:")
             for insn in set(self.instructions) - done_insns:
                 print("    ", str(insn).replace("\n", "\n     "))
                 from pymbolic import var
