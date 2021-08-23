@@ -97,7 +97,7 @@ class StokesletWrapperBase:
                          sym.S(kernel, density_vec_sym[i],
                          qbx_forced_limit=qbx_forced_limit)))
 
-        return merge_int_g_exprs(sym_expr)
+        return merge_int_g_exprs([sym_expr])
 
     def apply_derivative(self, deriv_dir, density_vec_sym, qbx_forced_limit):
         """Symbolic derivative of velocity from Stokeslet.
@@ -202,7 +202,7 @@ class StressletWrapperBase:
                                              density_vec_sym[i] * dir_vec_sym[j],
                                              qbx_forced_limit=qbx_forced_limit)))
 
-        return merge_int_g_exprs(sym_expr)
+        return merge_int_g_exprs([sym_expr])
 
     def apply_stress(self, density_vec_sym, normal_vec_sym, dir_vec_sym,
                         qbx_forced_limit):
