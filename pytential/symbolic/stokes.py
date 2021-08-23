@@ -334,8 +334,9 @@ class StressletWrapper(StressletWrapperBase):
         for i in range(dim):
             for j in range(i, dim):
                 for k in range(j, dim):
-                    self.kernel_dict[(i, j, k)] = StressletKernel(dim=dim, icomp=i,
-                                                                  jcomp=j, kcomp=k)
+                    self.kernel_dict[(i, j, k)] = StressletKernel(
+                            dim=dim, icomp=i, jcomp=j, kcomp=k,
+                            viscosity_mu=mu_sym)
 
         # The dictionary allows us to exploit symmetry -- that
         # :math:`T_{012}` is identical to :math:`T_{120}` -- and avoid creating
