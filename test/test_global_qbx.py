@@ -40,7 +40,7 @@ from arraycontext import pytest_generate_tests_for_array_contexts
 from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 
 from extra_curve_data import horseshoe
-from extra_int_eq_data import QuadSphereTestCase
+from extra_int_eq_data import QuadSphereTestCase, OrderAndTypeQuadratureGroupFactory
 
 import logging
 logger = logging.getLogger(__name__)
@@ -83,17 +83,8 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
     # {{{ initial geometry
 
-    from meshmode.discretization.poly_element import (
-            InterpolatoryQuadratureSimplexElementGroup,
-            GaussLegendreTensorProductElementGroup,
-            OrderAndTypeBasedGroupFactory)
     from meshmode.discretization import Discretization
-    discr = Discretization(actx, mesh,
-            OrderAndTypeBasedGroupFactory(
-                order,
-                simplex_group_class=InterpolatoryQuadratureSimplexElementGroup,
-                tensor_product_group_class=GaussLegendreTensorProductElementGroup
-                ))
+    discr = Discretization(actx, mesh, OrderAndTypeQuadratureGroupFactory(order))
 
     lpot_source = QBXLayerPotentialSource(discr,
             qbx_order=order,  # not used in refinement
