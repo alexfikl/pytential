@@ -78,7 +78,7 @@ def iter_elements(discr):
 
 
 def run_source_refinement_test(actx_factory, mesh, order,
-        helmholtz_k=None, visualize=False):
+        helmholtz_k=None, visualize=True):
     actx = actx_factory()
 
     # {{{ initial geometry
@@ -120,7 +120,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
         vis = make_visualizer(actx, vis_discr, order, force_equidistant=True)
         vis.write_vtk_file(f"global-qbx-source-refinement-{order}.vtu", [
             ("stretch", stretch),
-            ], overwrite=True)
+            ], overwrite=True, use_high_order=True)
 
     # }}}
 
@@ -244,7 +244,7 @@ def test_source_refinement_2d(actx_factory, curve_name, curve_f, nelements):
 @pytest.mark.parametrize(("surface_name", "surface_f", "order"), [
     ("sphere", partial(mgen.generate_sphere, 1), 4),
     ("torus", partial(mgen.generate_torus, 3, 1, n_minor=10, n_major=7), 6),
-    ("spheroid_quad", lambda order: QuadSphereTestCase().get_mesh(0.35, order), 4),
+    ("sphere_quad", lambda order: QuadSphereTestCase().get_mesh(1, order), 4),
     ])
 def test_source_refinement_3d(actx_factory, surface_name, surface_f, order):
     mesh = surface_f(order=order)

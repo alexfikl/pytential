@@ -539,6 +539,25 @@ class DiscretizationProperty(Expression):
         return (self.dofdesc,)
 
 
+class _ShapeDiscretizationProperty(DiscretizationProperty):
+    init_arg_names = ("shape_name_to_expr", "dofdesc")
+
+    def __init__(self, shape_name_to_expr, dofdesc=None):
+        if isinstance(shape_name_to_expr, tuple):
+            shape_name_to_expr = dict(shape_name_to_expr)
+
+        if not isinstance(shape_name_to_expr, dict):
+            shape_name_to_expr = {None: shape_name_to_expr}
+
+        super().__init__(dofdesc)
+        self.shape_name_to_expr = shape_name_to_expr
+
+    def __getinitargs__(self):
+        return (tuple(self.shape_name_to_expr.items()), self.dofdesc)
+
+    mapper_method = intern("map_shape_discretization_property")
+
+
 # {{{ discretization properties
 
 class QWeight(DiscretizationProperty):
@@ -888,7 +907,7 @@ def _equilateral_parametrization_derivative_matrix(ambient_dim, dim=None,
 def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
         with_elementwise_max=True):
     """Return the largest factor by which the reference-to-global
-    mapping stretches the bi-unit (i.e. :math:`[-1,1]`) reference
+    mapping stretches the bi-unit (i.e. :math:`[-1, 1]`) reference
     element along any axis.
 
     If *map_elementwise_max* is True, returns a DOF vector that is elementwise
@@ -916,7 +935,7 @@ def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
             "pd_mat_jtj")
 
     stretch_factors = [
-            cse(sqrt(s), "mapping_singval_%d" % i)
+            cse(sqrt(s), f"simplex_mapping_singval_{i}")
             for i, s in enumerate(
                 _small_mat_eigenvalues(
                     # Multiply by 4 to compensate for equilateral reference
@@ -930,7 +949,29 @@ def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     if with_elementwise_max:
         result = ElementwiseMax(result, dofdesc=dofdesc)
 
-    return cse(result, "mapping_max_stretch", cse_scope.DISCRETIZATION)
+    return cse(result, "simplex_mapping_max_stretch", cse_scope.DISCRETIZATION)
+
+
+def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
+        with_elementwise_max=True):
+    if dim is None:
+        dim = ambient_dim - 1
+
+    # NOTE: unlike in the simplex case, here we do not need to transform the
+    # reference element, as it already is nicely rotation invariant
+    pder_mat = first_fundamental_form(ambient_dim, dim=dim, dofdesc=dofdesc)
+    stretch_factors = [
+            cse(sqrt(s), f"hypercube_mapping_singval_{i}")
+            for i, s in enumerate(_small_mat_eigenvalues(pder_mat))
+            ]
+
+    from pymbolic.primitives import Max
+    result = Max(tuple(stretch_factors))
+
+    if with_elementwise_max:
+        result = ElementwiseMax(result, dofdesc=dofdesc)
+
+    return cse(result, "hypercube_mapping_max_stretch", cse_scope.DISCRETIZATION)
 
 
 def _max_curvature(ambient_dim, dim=None, dofdesc=None):
@@ -993,9 +1034,15 @@ def _quad_resolution(ambient_dim, dim=None, granularity=None, dofdesc=None):
     from_dd = as_dofdesc(dofdesc)
     to_dd = from_dd.copy(granularity=granularity)
 
-    stretch = _simplex_mapping_max_stretch_factor(ambient_dim,
-            dim=dim, dofdesc=from_dd)
-    return interp(from_dd, to_dd, stretch)
+    simplex_stretch = _simplex_mapping_max_stretch_factor(
+            ambient_dim, dim=dim, dofdesc=from_dd)
+    hypercube_stretch = _hypercube_mapping_max_stretch_factor(
+            ambient_dim, dim=dim, dofdesc=from_dd)
+
+    return _ShapeDiscretizationProperty({
+        "simplex": interp(from_dd, to_dd, simplex_stretch),
+        "hypercube": interp(from_dd, to_dd, hypercube_stretch),
+        }, dofdesc=dofdesc)
 
 
 def _source_danger_zone_radii(ambient_dim, dim=None,
