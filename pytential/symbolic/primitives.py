@@ -240,6 +240,14 @@ class DEFAULT_TARGET:  # noqa: N801
     pass
 
 
+class QBX_TARGET:
+    """Symbolic identifier for the target discretization of a
+    :class:`pytential.qbx.QBXLayerPotentialSource`, that is the original
+    unrefined discretization.
+    """
+    pass
+
+
 class QBX_SOURCE_STAGE1:   # noqa: N801
     """Symbolic identifier for the Stage 1 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
@@ -313,6 +321,7 @@ class DOFDescriptor:
             granularity = GRANULARITY_NODE
 
         if not (discr_stage is None
+                or discr_stage == QBX_TARGET
                 or discr_stage == QBX_SOURCE_STAGE1
                 or discr_stage == QBX_SOURCE_STAGE2
                 or discr_stage == QBX_SOURCE_QUAD_STAGE2):
@@ -386,6 +395,8 @@ class DOFDescriptor:
             name.append("stage2")
         elif self.discr_stage == QBX_SOURCE_QUAD_STAGE2:
             name.append("quads2")
+        elif self.discr_stage == QBX_TARGET:
+            name.append("target")
 
         if self.granularity == GRANULARITY_CENTER:
             name.append("center")
@@ -401,7 +412,8 @@ def as_dofdesc(desc):
 
     if desc == QBX_SOURCE_STAGE1 \
             or desc == QBX_SOURCE_STAGE2 \
-            or desc == QBX_SOURCE_QUAD_STAGE2:
+            or desc == QBX_SOURCE_QUAD_STAGE2 \
+            or desc == QBX_TARGET:
         return DOFDescriptor(discr_stage=desc)
 
     if desc == GRANULARITY_NODE \
@@ -761,14 +773,8 @@ def first_fundamental_form(ambient_dim, dim=None, dofdesc=None):
     if dim is None:
         dim = ambient_dim - 1
 
-    if not (ambient_dim == 3 and dim == 2):
-        raise NotImplementedError("only available for surfaces in 3D")
-
     pd_mat = parametrization_derivative_matrix(ambient_dim, dim, dofdesc)
-
-    return cse(
-            np.dot(pd_mat.T, pd_mat),
-            "fundform1")
+    return cse(np.dot(pd_mat.T, pd_mat), "fundform1")
 
 
 def second_fundamental_form(ambient_dim, dim=None, dofdesc=None):
@@ -961,7 +967,7 @@ def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     # reference element, as it already is nicely rotation invariant
     pder_mat = first_fundamental_form(ambient_dim, dim=dim, dofdesc=dofdesc)
     stretch_factors = [
-            cse(sqrt(s), f"hypercube_mapping_singval_{i}")
+            cse(4.0 * sqrt(s), f"hypercube_mapping_singval_{i}")
             for i, s in enumerate(_small_mat_eigenvalues(pder_mat))
             ]
 

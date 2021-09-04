@@ -839,11 +839,12 @@ class GeometryCollection:
 
     def _get_qbx_discretization(self, geometry, discr_stage):
         lpot_source = self.get_geometry(geometry)
+        if discr_stage == sym.QBX_TARGET:
+            return lpot_source.density_discr
 
         try:
             discr = self._get_discr_from_cache(geometry, discr_stage)
         except KeyError:
-            from pytential import sym
             from pytential.qbx.refinement import _refine_for_global_qbx
 
             # NOTE: this adds the required discretizations to the cache
