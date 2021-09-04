@@ -232,15 +232,15 @@ class _NoArgSentinel:
 
 # {{{ dof descriptors
 
-class DEFAULT_SOURCE:  # noqa: N801
+class DEFAULT_SOURCE:   # noqa: N801
     pass
 
 
-class DEFAULT_TARGET:  # noqa: N801
+class DEFAULT_TARGET:   # noqa: N801
     pass
 
 
-class QBX_TARGET:
+class QBX_TARGET:       # noqa: N801
     """Symbolic identifier for the target discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`, that is the original
     unrefined discretization.

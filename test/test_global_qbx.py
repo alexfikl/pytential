@@ -40,7 +40,9 @@ from arraycontext import pytest_generate_tests_for_array_contexts
 from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 
 from extra_curve_data import horseshoe
-from extra_int_eq_data import QuadSphereTestCase, OrderAndTypeQuadratureGroupFactory
+from extra_int_eq_data import (
+        QuadSpheroidTestCase,
+        OrderAndTypeQuadratureGroupFactory)
 
 import logging
 logger = logging.getLogger(__name__)
@@ -78,7 +80,7 @@ def iter_elements(discr):
 
 
 def run_source_refinement_test(actx_factory, mesh, order,
-        helmholtz_k=None, visualize=True):
+        helmholtz_k=None, surface_name="surface", visualize=False):
     actx = actx_factory()
 
     # {{{ initial geometry
@@ -98,6 +100,21 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
     # {{{ refined geometry
 
+    def _visualize_quad_resolution(_places, dd, suffix):
+        vis_discr = _places.get_discretization(dd.geometry, dd.discr_stage)
+
+        stretch = bind(_places,
+                sym._simplex_mapping_max_stretch_factor(
+                    _places.ambient_dim, with_elementwise_max=False),
+                auto_where=dd)(actx)
+
+        from meshmode.discretization.visualization import make_visualizer
+        vis = make_visualizer(actx, vis_discr, order, force_equidistant=True)
+        vis.write_vtk_file(
+                f"global-qbx-source-refinement-{surface_name}-{order}-{suffix}.vtu",
+                [("stretch", stretch)],
+                overwrite=True, use_high_order=True)
+
     kernel_length_scale = 5 / helmholtz_k if helmholtz_k else None
     expansion_disturbance_tolerance = 0.025
 
@@ -105,22 +122,14 @@ def run_source_refinement_test(actx_factory, mesh, order,
     places = refine_geometry_collection(places,
             kernel_length_scale=kernel_length_scale,
             expansion_disturbance_tolerance=expansion_disturbance_tolerance,
-            visualize=visualize)
+            visualize=False)
 
     if visualize:
-        dd = places.auto_source.to_stage1()
-        vis_discr = places.get_discretization(dd.geometry, dd.discr_stage)
-
-        stretch = bind(places,
-                sym._simplex_mapping_max_stretch_factor(
-                    places.ambient_dim, with_elementwise_max=False),
-                auto_where=dd)(actx)
-
-        from meshmode.discretization.visualization import make_visualizer
-        vis = make_visualizer(actx, vis_discr, order, force_equidistant=True)
-        vis.write_vtk_file(f"global-qbx-source-refinement-{order}.vtu", [
-            ("stretch", stretch),
-            ], overwrite=True, use_high_order=True)
+        dd = places.auto_source
+        _visualize_quad_resolution(places,
+                dd.copy(discr_stage=sym.QBX_TARGET), "original")
+        _visualize_quad_resolution(places, dd.to_stage1(), "stage1")
+        _visualize_quad_resolution(places, dd.to_stage2(), "stage2")
 
     # }}}
 
@@ -233,22 +242,29 @@ def run_source_refinement_test(actx_factory, mesh, order,
     ("20-to-1 ellipse", partial(mgen.ellipse, 20), 100),
     ("horseshoe", horseshoe, 64),
     ])
-def test_source_refinement_2d(actx_factory, curve_name, curve_f, nelements):
+def test_source_refinement_2d(actx_factory,
+        curve_name, curve_f, nelements, visualize=False):
     helmholtz_k = 10
     order = 8
 
     mesh = mgen.make_curve_mesh(curve_f, np.linspace(0, 1, nelements+1), order)
-    run_source_refinement_test(actx_factory, mesh, order, helmholtz_k)
+    run_source_refinement_test(actx_factory, mesh, order,
+            helmholtz_k=helmholtz_k,
+            surface_name=curve_name,
+            visualize=visualize)
 
 
 @pytest.mark.parametrize(("surface_name", "surface_f", "order"), [
     ("sphere", partial(mgen.generate_sphere, 1), 4),
     ("torus", partial(mgen.generate_torus, 3, 1, n_minor=10, n_major=7), 6),
-    ("sphere_quad", lambda order: QuadSphereTestCase().get_mesh(1, order), 4),
+    ("spheroid-quad", lambda order: QuadSpheroidTestCase().get_mesh(2, order), 4),
     ])
-def test_source_refinement_3d(actx_factory, surface_name, surface_f, order):
+def test_source_refinement_3d(actx_factory,
+        surface_name, surface_f, order, visualize=False):
     mesh = surface_f(order=order)
-    run_source_refinement_test(actx_factory, mesh, order)
+    run_source_refinement_test(actx_factory, mesh, order,
+            surface_name=surface_name,
+            visualize=visualize)
 
 
 @pytest.mark.parametrize(("curve_name", "curve_f", "nelements"), [

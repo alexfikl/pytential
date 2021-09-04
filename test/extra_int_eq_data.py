@@ -394,6 +394,8 @@ class SphereTestCase(IntegralEquationTestCase):
 
 
 class QuadSphereTestCase(SphereTestCase):
+    name = "quadsphere"
+
     def get_mesh(self, resolution, mesh_order):
         from meshmode.mesh import TensorProductElementGroup
         from meshmode.mesh.generation import generate_sphere
