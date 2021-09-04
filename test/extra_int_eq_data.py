@@ -393,17 +393,6 @@ class SphereTestCase(IntegralEquationTestCase):
                 uniform_refinement_rounds=resolution)
 
 
-class QuadSphereTestCase(SphereTestCase):
-    name = "quadsphere"
-
-    def get_mesh(self, resolution, mesh_order):
-        from meshmode.mesh import TensorProductElementGroup
-        from meshmode.mesh.generation import generate_sphere
-        return generate_sphere(1.0, mesh_order,
-                uniform_refinement_rounds=resolution,
-                group_cls=TensorProductElementGroup)
-
-
 class SpheroidTestCase(SphereTestCase):
     name = "spheroid"
     aspect_ratio = 2.0
@@ -415,6 +404,24 @@ class SpheroidTestCase(SphereTestCase):
         return affine_map(mesh, A=np.diag([
             self.radius, self.radius, self.radius / self.aspect_ratio,
             ]))
+
+
+class QuadSpheroidTestCase(SphereTestCase):
+    name = "quadspheroid"
+    aspect_ratio = 2.0
+
+    def get_mesh(self, resolution, mesh_order):
+        from meshmode.mesh import TensorProductElementGroup
+        from meshmode.mesh.generation import generate_sphere
+        mesh = generate_sphere(1.0, mesh_order,
+                uniform_refinement_rounds=resolution,
+                group_cls=TensorProductElementGroup)
+
+        if abs(self.aspect_ratio - 1.0) > 1.0e-14:
+            from meshmode.mesh.processing import affine_map
+            mesh = affine_map(mesh, A=np.diag([1.0, 1.0, self.aspect_ratio]))
+
+        return mesh
 
 
 class TorusTestCase(IntegralEquationTestCase):

@@ -558,9 +558,6 @@ class _ShapeDiscretizationProperty(DiscretizationProperty):
         if isinstance(shape_name_to_expr, tuple):
             shape_name_to_expr = dict(shape_name_to_expr)
 
-        if not isinstance(shape_name_to_expr, dict):
-            shape_name_to_expr = {None: shape_name_to_expr}
-
         super().__init__(dofdesc)
         self.shape_name_to_expr = shape_name_to_expr
 
