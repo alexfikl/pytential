@@ -964,8 +964,10 @@ def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     # reference element, as it already is nicely rotation invariant
     pder_mat = first_fundamental_form(ambient_dim, dim=dim, dofdesc=dofdesc)
     stretch_factors = [
-            cse(4.0 * sqrt(s), f"hypercube_mapping_singval_{i}")
-            for i, s in enumerate(_small_mat_eigenvalues(pder_mat))
+            cse(sqrt(s), f"hypercube_mapping_singval_{i}")
+            # NOTE: like for the simplex, we multiply `pder_mat` by 4 to
+            # account for the side length of 2 in J^T J
+            for i, s in enumerate(_small_mat_eigenvalues(4.0 * pder_mat))
             ]
 
     from pymbolic.primitives import Max
