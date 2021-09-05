@@ -306,14 +306,28 @@ class CircleTestCase(EllipseTestCase):
     radius = 1.0
 
 
+class WobbleCircleTestCase(CurveTestCase):
+    name = "wobble-circle"
+    resolutions = [2000, 3000, 4000]
+
+    def _curve_fn(self, t):
+        from meshmode.mesh.generation import WobblyCircle
+        return WobblyCircle.random(30, seed=30)(t)
+
+
 class StarfishTestCase(CurveTestCase):
-    name = "starfish"
-    narms = 5
+    resolutions = [30, 50, 70, 90]
+
+    n_arms = 5
     amplitude = 0.25
+
+    @property
+    def name(self):
+        return f"{self.n_arms}-starfish-{repr(self.amplitude)}"
 
     def _curve_fn(self, t):
         from meshmode.mesh.generation import NArmedStarfish
-        return NArmedStarfish(self.narms, self.amplitude)(t)
+        return NArmedStarfish(self.n_arms, self.amplitude)(t)
 
 # }}}
 
