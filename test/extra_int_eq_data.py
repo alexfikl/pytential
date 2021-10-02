@@ -235,7 +235,7 @@ class IntegralEquationTestCase(RecordWithoutPickling):
         attrs = {k: getattr(self, k) for k in self.__class__.fields}
         header = {
                 "class": type(self).__name__,
-                "name": attrs.pop("name"),
+                "name": attrs.get("name", self.name),
                 "-" * width: "-" * width
                 }
 
@@ -309,7 +309,7 @@ class StarfishTestCase(CurveTestCase):
 
     @property
     def name(self):
-        return f"{self.n_arms}-starfish-{repr(self.amplitude)}"
+        return f"starfish_{self.n_arms}"
 
     def _curve_fn(self, t):
         from meshmode.mesh.generation import NArmedStarfish
