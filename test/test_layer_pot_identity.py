@@ -263,10 +263,12 @@ def test_identity_convergence(actx_factory,  case, visualize=False):
             knl_kwargs = {"k": sym.var("k")}
 
         from meshmode.discretization import Discretization
-        from pytential.qbx import QBXLayerPotentialSource
+        from meshmode.discretization.poly_element import \
+                InterpolatoryQuadratureGroupFactory
         pre_density_discr = Discretization(
-                actx, mesh, ied.OrderAndTypeQuadratureGroupFactory(target_order))
+                actx, mesh, InterpolatoryQuadratureGroupFactory(target_order))
 
+        from pytential.qbx import QBXLayerPotentialSource
         qbx = QBXLayerPotentialSource(
                 pre_density_discr, 4*target_order,
                 case.qbx_order,

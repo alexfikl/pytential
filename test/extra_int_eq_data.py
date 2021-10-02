@@ -24,7 +24,7 @@ import numpy as np
 
 from pytential import sym
 from pytools import RecordWithoutPickling, memoize_method
-from meshmode.discretization.poly_element import OrderAndTypeBasedGroupFactory
+from meshmode.discretization.poly_element import InterpolatoryQuadratureGroupFactory
 
 import logging
 logger = logging.getLogger(__name__)
@@ -78,20 +78,6 @@ def make_source_and_target_points(
 
 # {{{ IntegralEquationTestCase
 
-class OrderAndTypeQuadratureGroupFactory(OrderAndTypeBasedGroupFactory):
-    def __init__(self, order):
-        from meshmode.discretization.poly_element import (
-            InterpolatoryQuadratureSimplexElementGroup,
-            GaussLegendreTensorProductElementGroup,
-            )
-
-        super().__init__(
-                order,
-                simplex_group_class=InterpolatoryQuadratureSimplexElementGroup,
-                tensor_product_group_class=GaussLegendreTensorProductElementGroup,
-                )
-
-
 class IntegralEquationTestCase(RecordWithoutPickling):
     name = "unknown"
 
@@ -106,7 +92,7 @@ class IntegralEquationTestCase(RecordWithoutPickling):
     source_ovsmp = 4
     target_order = None
     use_refinement = True
-    group_factory_cls = OrderAndTypeQuadratureGroupFactory
+    group_factory_cls = InterpolatoryQuadratureGroupFactory
 
     # fmm
     fmm_backend = "sumpy"
