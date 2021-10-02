@@ -433,7 +433,7 @@ class QuadSpheroidTestCase(SphereTestCase):
 
         if abs(self.aspect_ratio - 1.0) > 1.0e-14:
             from meshmode.mesh.processing import affine_map
-            mesh = affine_map(mesh, A=np.diag([1.0, 1.0, self.aspect_ratio]))
+            mesh = affine_map(mesh, A=np.diag([1.0, 1.0, 1/self.aspect_ratio]))
 
         return mesh
 
