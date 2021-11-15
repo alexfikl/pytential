@@ -370,44 +370,26 @@ def principal_directions(ambient_dim, dim=None, dofdesc=None):
         ])
 
 
-def test_prepare_expr():
+def test_derivative_binder_expr():
     logging.basicConfig(level=logging.INFO)
 
     ambient_dim = 3
     dim = ambient_dim - 1
 
-    from pytential.symbolic.mappers import (
-            DerivativeBinder, DerivativeSourceAndNablaComponentCollector)
+    from pytential.symbolic.mappers import DerivativeBinder
     d1, d2 = principal_directions(ambient_dim, dim=dim)
     expr = (d1 @ d2 + d1 @ d1) / (d2 @ d2)
 
-    timings = []
     nruns = 4
     for i in range(nruns):
         from pytools import ProcessTimer
         with ProcessTimer() as pd:
             new_expr = DerivativeBinder()(expr)
 
-        with ProcessTimer() as pc:
-            DerivativeSourceAndNablaComponentCollector()(expr)
+        logger.info("time: [%04d/%04d] bind [%s] (%s)",
+                i, nruns, pd, expr is new_expr)
 
-        logger.info("time: [%04d/%04d] bind [%s] collect [%s] (%s)",
-                i, nruns, pd, pc, expr is new_expr)
-        timings.append(pd.wall_elapsed)
-
-    timings = np.array(timings)
-
-    import dufte
-    import matplotlib.pyplot as mp
-    mp.style.use(dufte.style)
-
-    fig = mp.figure(figsize=(10, 10), dpi=300)
-    ax = fig.gca()
-    ax.plot(timings, "o-")
-    ax.axhline(np.mean(timings), color="k", ls="--")
-    ax.set_ylabel("$Time~ (s)$")
-    fig.savefig("derivative-binder-timings-after")
-
+        assert expr is new_expr
 
 # }}}
 
