@@ -2,7 +2,7 @@
 numpy != 1.22.0
 
 git+git://github.com/inducer/pytools.git#egg=pytools
-git+git://github.com/inducer/pymbolic.git#egg=pymbolic
+git+git://github.com/alexfikl/pymbolic.git@micro-optimizations#egg=pymbolic
 sympy
 git+https://github.com/inducer/modepy.git#egg=modepy
 git+https://github.com/inducer/pyopencl.git#egg=pyopencl
