@@ -232,15 +232,15 @@ class _NoArgSentinel:
 
 # {{{ dof descriptors
 
-class DEFAULT_SOURCE:   # noqa: N801
+class DEFAULT_SOURCE:                   # noqa: N801
     pass
 
 
-class DEFAULT_TARGET:   # noqa: N801
+class DEFAULT_TARGET:                   # noqa: N801
     pass
 
 
-class QBX_TARGET:       # noqa: N801
+class QBX_SOURCE_PRE_STAGE:             # noqa: N801
     """Symbolic identifier for the target discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`, that is the original
     unrefined discretization.
@@ -248,38 +248,38 @@ class QBX_TARGET:       # noqa: N801
     pass
 
 
-class QBX_SOURCE_STAGE1:   # noqa: N801
+class QBX_SOURCE_STAGE1:                # noqa: N801
     """Symbolic identifier for the Stage 1 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
-class QBX_SOURCE_STAGE2:   # noqa: N801
+class QBX_SOURCE_STAGE2:                # noqa: N801
     """Symbolic identifier for the Stage 2 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
-class QBX_SOURCE_QUAD_STAGE2:   # noqa: N801
+class QBX_SOURCE_QUAD_STAGE2:           # noqa: N801
     """Symbolic identifier for the upsampled Stage 2 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
     pass
 
 
-class GRANULARITY_NODE:     # noqa: N801
+class GRANULARITY_NODE:                 # noqa: N801
     """DOFs are per node."""
     pass
 
 
-class GRANULARITY_CENTER:   # noqa: N801
+class GRANULARITY_CENTER:               # noqa: N801
     """DOFs interleaved per expansion center (two per node, one on each side)."""
     pass
 
 
-class GRANULARITY_ELEMENT:  # noqa: N801
+class GRANULARITY_ELEMENT:              # noqa: N801
     """DOFs per discretization element."""
     pass
 
@@ -321,10 +321,10 @@ class DOFDescriptor:
             granularity = GRANULARITY_NODE
 
         if not (discr_stage is None
-                or discr_stage == QBX_TARGET
                 or discr_stage == QBX_SOURCE_STAGE1
                 or discr_stage == QBX_SOURCE_STAGE2
-                or discr_stage == QBX_SOURCE_QUAD_STAGE2):
+                or discr_stage == QBX_SOURCE_QUAD_STAGE2
+                or discr_stage == QBX_SOURCE_PRE_STAGE):
             raise ValueError(f"unknown discr stage tag: '{discr_stage}'")
 
         if not (granularity == GRANULARITY_NODE
@@ -395,8 +395,6 @@ class DOFDescriptor:
             name.append("stage2")
         elif self.discr_stage == QBX_SOURCE_QUAD_STAGE2:
             name.append("quads2")
-        elif self.discr_stage == QBX_TARGET:
-            name.append("target")
 
         if self.granularity == GRANULARITY_CENTER:
             name.append("center")
@@ -413,7 +411,7 @@ def as_dofdesc(desc):
     if desc == QBX_SOURCE_STAGE1 \
             or desc == QBX_SOURCE_STAGE2 \
             or desc == QBX_SOURCE_QUAD_STAGE2 \
-            or desc == QBX_TARGET:
+            or desc == QBX_SOURCE_PRE_STAGE:
         return DOFDescriptor(discr_stage=desc)
 
     if desc == GRANULARITY_NODE \

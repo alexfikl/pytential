@@ -127,7 +127,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
     if visualize:
         dd = places.auto_source
         _visualize_quad_resolution(places,
-                dd.copy(discr_stage=sym.QBX_TARGET), "original")
+                dd.copy(discr_stage=sym.QBX_SOURCE_PRE_STAGE), "original")
         _visualize_quad_resolution(places, dd.to_stage1(), "stage1")
         _visualize_quad_resolution(places, dd.to_stage2(), "stage2")
 

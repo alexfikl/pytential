@@ -839,7 +839,7 @@ class GeometryCollection:
 
     def _get_qbx_discretization(self, geometry, discr_stage):
         lpot_source = self.get_geometry(geometry)
-        if discr_stage == sym.QBX_TARGET:
+        if discr_stage == sym.QBX_SOURCE_PRE_STAGE:
             return lpot_source.density_discr
 
         try:
