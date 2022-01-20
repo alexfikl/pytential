@@ -147,10 +147,27 @@ class CenterGranularityConnection(GranularityConnection):
             raise TypeError("cannot interleave arrays of different types: "
                     f"'{type(ary1).__name__}' and '{type(ary2.__name__)}'")
 
-        from meshmode.dof_array import rec_multimap_dof_array_container
-        return rec_multimap_dof_array_container(
-                self._interleave_dof_arrays,
-                ary1, ary2)
+        # {{{ recurse into array containers
+
+        if isinstance(ary1, DOFArray):
+            return self._interleave_dof_arrays(ary1, ary2)
+        else:
+            from arraycontext import (
+                    serialize_container, deserialize_container,
+                    NotAnArrayContainerError)
+
+            try:
+                iterable1 = serialize_container(ary1)
+                iterable2 = serialize_container(ary2)
+            except NotAnArrayContainerError:
+                raise TypeError(f"'{type(ary1).__name__}' is not an array container")
+            else:
+                return deserialize_container(ary1, [
+                    (key, self(subary1, subary2))
+                    for (key, subary1), (_, subary2) in zip(iterable1, iterable2)
+                    ])
+
+        # }}}
 
 # }}}
 
