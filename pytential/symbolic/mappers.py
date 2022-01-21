@@ -135,6 +135,11 @@ class IdentityMapper(IdentityMapperBase):
 
         return type(expr)(expr.from_dd, expr.to_dd, operand)
 
+    def map_shape_discretization_property(self, expr):
+        return type(expr)({
+            k: self.rec(v) for k, v in expr.shape_name_to_expr.items()
+            }, dofdesc=expr.dofdesc)
+
 
 class CombineMapper(CombineMapperBase):
     def map_node_sum(self, expr):
@@ -160,6 +165,11 @@ class CombineMapper(CombineMapperBase):
                 (self.rec(name_expr)
                 for name_expr in expr.extra_vars.values())
                 ])
+
+    def map_shape_discretization_property(self, expr):
+        return self.combine([
+            self.rec(v) for v in expr.shape_name_to_expr.values()
+            ])
 
 
 class Collector(CollectorBase, CombineMapper):
@@ -339,6 +349,11 @@ class LocationTagger(CSECachingMapperMixin, IdentityMapper):
             to_dd = to_dd.copy(geometry=self.default_source)
 
         return type(expr)(from_dd, to_dd, self.operand_rec(expr.operand))
+
+    def map_shape_discretization_property(self, expr):
+        return type(expr)({
+            k: self.rec(v) for k, v in expr.shape_name_to_expr.items()
+            }, dofdesc=self._default_dofdesc(expr.dofdesc))
 
     def operand_rec(self, expr):
         return self.rec(expr)
