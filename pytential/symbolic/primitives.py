@@ -976,6 +976,7 @@ def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     result = Max(tuple(stretch_factors))
 
     if with_elementwise_max:
+        dofdesc = dofdesc.copy(granularity=GRANULARITY_ELEMENT)
         result = ElementwiseMax(result, dofdesc=dofdesc)
 
     return cse(result, "simplex_mapping_max_stretch", cse_scope.DISCRETIZATION)
@@ -1000,6 +1001,7 @@ def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     result = Max(tuple(stretch_factors))
 
     if with_elementwise_max:
+        dofdesc = dofdesc.copy(granularity=GRANULARITY_ELEMENT)
         result = ElementwiseMax(result, dofdesc=dofdesc)
 
     return cse(result, "hypercube_mapping_max_stretch", cse_scope.DISCRETIZATION)
@@ -1050,7 +1052,8 @@ def _expansion_radii_factor(ambient_dim, dim):
     return 0.5 * dim_fudge_factor
 
 
-def _quad_resolution(ambient_dim, dim=None, granularity=None, dofdesc=None):
+def _quad_resolution(ambient_dim, dim=None, granularity=None, dofdesc=None,
+        with_elementwise_max=False):
     """This measures the quadrature resolution across the
     mesh. In a 1D uniform mesh of uniform 'parametrization speed', it
     should be the same as the panel length.
@@ -1066,9 +1069,11 @@ def _quad_resolution(ambient_dim, dim=None, granularity=None, dofdesc=None):
     to_dd = from_dd.copy(granularity=granularity)
 
     simplex_stretch = _simplex_mapping_max_stretch_factor(
-            ambient_dim, dim=dim, dofdesc=from_dd)
+            ambient_dim, dim=dim, dofdesc=from_dd,
+            with_elementwise_max=with_elementwise_max)
     hypercube_stretch = _hypercube_mapping_max_stretch_factor(
-            ambient_dim, dim=dim, dofdesc=from_dd)
+            ambient_dim, dim=dim, dofdesc=from_dd,
+            with_elementwise_max=with_elementwise_max)
 
     return _ShapeDiscretizationProperty({
         "simplex": interp(from_dd, to_dd, simplex_stretch),
@@ -1102,7 +1107,8 @@ def _close_target_tunnel_radii(ambient_dim, dim=None,
 def expansion_radii(ambient_dim, dim=None, granularity=None, dofdesc=None):
     factor = _expansion_radii_factor(ambient_dim, dim)
     return cse(factor * _quad_resolution(ambient_dim, dim=dim,
-        granularity=granularity, dofdesc=dofdesc),
+        granularity=granularity, dofdesc=dofdesc,
+        with_elementwise_max=False),
         "expansion_radii",
         cse_scope.DISCRETIZATION)
 
@@ -1133,9 +1139,7 @@ def interleaved_expansion_centers(ambient_dim, dim=None, dofdesc=None):
 def h_max(ambient_dim, dim=None, dofdesc=None):
     """Defines a maximum element size in the discretization."""
 
-    dofdesc = as_dofdesc(dofdesc).copy(granularity=GRANULARITY_ELEMENT)
     r = _quad_resolution(ambient_dim, dim=dim, dofdesc=dofdesc)
-
     return cse(NodeMax(r),
             "h_max",
             cse_scope.DISCRETIZATION)
@@ -1144,9 +1148,7 @@ def h_max(ambient_dim, dim=None, dofdesc=None):
 def h_min(ambient_dim, dim=None, dofdesc=None):
     """Yields an approximate minimum element size in the discretization."""
 
-    dofdesc = as_dofdesc(dofdesc).copy(granularity=GRANULARITY_ELEMENT)
     r = _quad_resolution(ambient_dim, dim=dim, dofdesc=dofdesc)
-
     return cse(NodeMin(r),
             "h_min",
             cse_scope.DISCRETIZATION)

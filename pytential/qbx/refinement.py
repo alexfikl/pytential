@@ -368,12 +368,15 @@ class RefinerWrangler(TreeWranglerBase):
         found_panel_to_refine.finish()
 
         from pytential import bind, sym
-        dd = sym.as_dofdesc(sym.GRANULARITY_ELEMENT).to_stage2()
         source_danger_zone_radii_by_panel = flatten(
-                bind(stage2_density_discr,
-                    sym._source_danger_zone_radii(
-                        stage2_density_discr.ambient_dim, dofdesc=dd))
-                (self.array_context), self.array_context)
+                bind(
+                    stage2_density_discr,
+                    sym.ElementwiseMax(
+                        sym._source_danger_zone_radii(
+                            stage2_density_discr.ambient_dim,
+                            dofdesc=sym.QBX_SOURCE_STAGE2),
+                        dofdesc=sym.GRANULARITY_ELEMENT)
+                    )(self.array_context), self.array_context)
         unwrap_args = AreaQueryElementwiseTemplate.unwrap_args
 
         evt = knl(
@@ -610,9 +613,12 @@ def _refine_qbx_stage1(lpot_source, density_discr,
             with ProcessLogger(logger,
                     "checking kernel length scale to panel size ratio"):
 
-                quad_resolution = bind(stage1_density_discr,
-                        sym._quad_resolution(stage1_density_discr.ambient_dim,
-                            dofdesc=sym.GRANULARITY_ELEMENT))(actx)
+                quad_resolution = bind(
+                        stage1_density_discr,
+                        sym.ElementwiseMax(
+                            sym._quad_resolution(stage1_density_discr.ambient_dim),
+                            dofdesc=sym.GRANULARITY_ELEMENT)
+                        )(actx)
 
                 violates_kernel_length_scale = \
                         wrangler.check_element_prop_threshold(
@@ -631,8 +637,8 @@ def _refine_qbx_stage1(lpot_source, density_discr,
                     "checking scaled max curvature threshold"):
                 scaled_max_curv = bind(stage1_density_discr,
                     sym.ElementwiseMax(sym._scaled_max_curvature(
-                        stage1_density_discr.ambient_dim),
-                        dofdesc=sym.GRANULARITY_ELEMENT))(actx)
+                        stage1_density_discr.ambient_dim))
+                    )(actx)
 
                 violates_scaled_max_curv = \
                         wrangler.check_element_prop_threshold(
