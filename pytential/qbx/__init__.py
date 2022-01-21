@@ -23,8 +23,8 @@ THE SOFTWARE.
 import numpy as np
 import pyopencl as cl
 
-from arraycontext import PyOpenCLArrayContext, freeze, thaw
-from meshmode.dof_array import flatten, unflatten
+from arraycontext import PyOpenCLArrayContext, thaw, freeze, flatten, unflatten
+from meshmode.dof_array import DOFArray
 
 from pytools import memoize_method, memoize_in, single_valued
 from pytential.qbx.target_assoc import QBXTargetAssociationFailedException
@@ -482,7 +482,6 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
 
         def drive_cost_model(
                     wrangler, strengths, geo_data, kernel, kernel_arguments):
-            del strengths
 
             if per_box:
                 cost_model_result, metadata = self.cost_model.qbx_cost_per_box(
@@ -496,10 +495,12 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                 )
 
             from pytools.obj_array import obj_array_vectorize
+            from functools import partial
             return (
                     obj_array_vectorize(
-                        wrangler.finalize_potentials,
-                        wrangler.full_output_zeros()),
+                        partial(wrangler.finalize_potentials,
+                            template_ary=strengths[0]),
+                        wrangler.full_output_zeros(strengths[0])),
                     (cost_model_result, metadata))
 
         return self._dispatch_compute_potential_insn(
@@ -524,7 +525,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
     # {{{ fmm-based execution
 
     @memoize_method
-    def expansion_wrangler_code_container(self, source_kernels, target_kernels):
+    def _tree_indep_data_for_wrangler(self, source_kernels, target_kernels):
         from functools import partial
         base_kernel = single_valued(kernel.get_base_kernel() for
             kernel in source_kernels)
@@ -539,8 +540,8 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
 
         if self.fmm_backend == "sumpy":
             from pytential.qbx.fmm import \
-                    QBXSumpyExpansionWranglerCodeContainer
-            return QBXSumpyExpansionWranglerCodeContainer(
+                    QBXSumpyTreeIndependentDataForWrangler
+            return QBXSumpyTreeIndependentDataForWrangler(
                     self.cl_context,
                     fmm_mpole_factory, fmm_local_factory, qbx_local_factory,
                     target_kernels=target_kernels, source_kernels=source_kernels)
@@ -552,11 +553,14 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                 target_kernel in target_kernels
             ]
             from pytential.qbx.fmmlib import \
-                    QBXFMMLibExpansionWranglerCodeContainer
-            return QBXFMMLibExpansionWranglerCodeContainer(
+                    QBXFMMLibTreeIndependentDataForWrangler
+            return QBXFMMLibTreeIndependentDataForWrangler(
                     self.cl_context,
-                    fmm_mpole_factory, fmm_local_factory, qbx_local_factory,
-                    target_kernels=target_kernels_new)
+                    multipole_expansion_factory=fmm_mpole_factory,
+                    local_expansion_factory=fmm_local_factory,
+                    qbx_local_expansion_factory=qbx_local_factory,
+                    target_kernels=target_kernels_new,
+                    _use_target_specific_qbx=self._use_target_specific_qbx)
 
         else:
             raise ValueError(f"invalid FMM backend: {self.fmm_backend}")
@@ -618,7 +622,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
         # FIXME don't compute *all* output kernels on all targets--respect that
         # some target discretizations may only be asking for derivatives (e.g.)
 
-        flat_strengths = _get_flat_strengths_from_densities(
+        flat_strengths = get_flat_strengths_from_densities(
                 actx, bound_expr.places, evaluate, insn.densities,
                 dofdesc=insn.source)
 
@@ -638,10 +642,12 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
         translation_classes_data = SumpyTranslationClassesData(actx.queue,
                 geo_data.traversal())
 
-        wrangler = self.expansion_wrangler_code_container(
+        tree_indep = self._tree_indep_data_for_wrangler(
                 target_kernels=insn.target_kernels,
-                source_kernels=insn.source_kernels).get_wrangler(
-                        actx.queue, geo_data, output_and_expansion_dtype,
+                source_kernels=insn.source_kernels)
+
+        wrangler = tree_indep.wrangler_cls(
+                        tree_indep, geo_data, output_and_expansion_dtype,
                         self.qbx_order,
                         self.fmm_level_to_order,
                         source_extra_kwargs=source_extra_kwargs,
@@ -683,7 +689,8 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
 
             from meshmode.discretization import Discretization
             if isinstance(target_discr, Discretization):
-                result = unflatten(actx, target_discr, result)
+                template_ary = thaw(target_discr.nodes()[0], actx)
+                result = unflatten(template_ary, result, actx, strict=False)
 
             results.append((o.name, result))
 
@@ -779,7 +786,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
         def _flat_nodes(dofdesc):
             discr = bound_expr.places.get_discretization(
                     dofdesc.geometry, dofdesc.discr_stage)
-            return freeze(flatten(thaw(discr.nodes(), actx), strict=False), actx)
+            return freeze(flatten(discr.nodes(), actx, leaf_class=DOFArray), actx)
 
         @memoize_in(bound_expr.places,
                 (QBXLayerPotentialSource, "flat_expansion_radii"))
@@ -788,7 +795,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                     bound_expr.places,
                     sym.expansion_radii(self.ambient_dim, dofdesc=dofdesc),
                     )(actx)
-            return freeze(flatten(radii), actx)
+            return freeze(flatten(radii, actx), actx)
 
         @memoize_in(bound_expr.places,
                 (QBXLayerPotentialSource, "flat_centers"))
@@ -797,13 +804,12 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                     sym.expansion_centers(
                         self.ambient_dim, qbx_forced_limit, dofdesc=dofdesc),
                     )(actx)
-            return freeze(flatten(centers), actx)
+            return freeze(flatten(centers, actx, leaf_class=DOFArray), actx)
 
-        kernel_args = {}
-        for arg_name, arg_expr in insn.kernel_arguments.items():
-            kernel_args[arg_name] = flatten(evaluate(arg_expr), strict=False)
-
-        flat_strengths = _get_flat_strengths_from_densities(
+        from pytential.source import evaluate_kernel_arguments
+        flat_kernel_args = evaluate_kernel_arguments(
+                actx, evaluate, insn.kernel_arguments, flat=True)
+        flat_strengths = get_flat_strengths_from_densities(
                 actx, bound_expr.places, evaluate, insn.densities,
                 dofdesc=insn.source)
 
@@ -863,12 +869,13 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                     centers=_flat_centers(target_name, qbx_forced_limit),
                     strengths=flat_strengths,
                     expansion_radii=_flat_expansion_radii(target_name),
-                    **kernel_args)
+                    **flat_kernel_args)
 
             for i, o in outputs:
                 result = output_for_each_kernel[o.target_kernel_index]
                 if isinstance(target_discr, Discretization):
-                    result = unflatten(actx, target_discr, result)
+                    template_ary = thaw(target_discr.nodes()[0], actx)
+                    result = unflatten(template_ary, result, actx, strict=False)
 
                 results[i] = (o.name, result)
 
@@ -891,7 +898,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                     targets=flat_target_nodes,
                     sources=flat_source_nodes,
                     strength=flat_strengths,
-                    **kernel_args)
+                    **flat_kernel_args)
 
             target_discrs_and_qbx_sides = ((target_discr, qbx_forced_limit),)
             geo_data = self.qbx_fmm_geometry_data(
@@ -925,7 +932,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             qbx_center_numbers = tgt_to_qbx_center[qbx_tgt_numbers]
             qbx_center_numbers.finish()
 
-            tgt_subset_kwargs = kernel_args.copy()
+            tgt_subset_kwargs = flat_kernel_args.copy()
             for i, res_i in enumerate(output_for_each_kernel):
                 tgt_subset_kwargs[f"result_{i}"] = res_i
 
@@ -944,7 +951,8 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             for i, o in outputs:
                 result = output_for_each_kernel[o.target_kernel_index]
                 if isinstance(target_discr, Discretization):
-                    result = unflatten(actx, target_discr, result)
+                    template_ary = thaw(target_discr.nodes()[0], actx)
+                    result = unflatten(template_ary, result, actx, strict=False)
 
                 results[i] = (o.name, result)
 
@@ -958,7 +966,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
     # }}}
 
 
-def _get_flat_strengths_from_densities(
+def get_flat_strengths_from_densities(
         actx, places, evaluate, densities, dofdesc=None):
     from pytential import bind, sym
     waa = bind(
@@ -967,8 +975,7 @@ def _get_flat_strengths_from_densities(
             )(actx)
     strength_vecs = [waa * evaluate(density) for density in densities]
 
-    from meshmode.dof_array import flatten
-    return [flatten(strength) for strength in strength_vecs]
+    return [flatten(strength, actx) for strength in strength_vecs]
 
 # }}}
 
