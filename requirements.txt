@@ -2,8 +2,8 @@
 numpy != 1.22.0
 
 git+git://github.com/inducer/pytools.git#egg=pytools
-git+git://github.com/inducer/pymbolic.git#egg=pymbolic
 git+https://github.com/isuruf/sympy.git@syzygies#egg=sympy
+git+git://github.com/alexfikl/pymbolic.git@micro-optimizations#egg=pymbolic
 git+https://github.com/inducer/modepy.git#egg=modepy
 git+https://github.com/inducer/pyopencl.git#egg=pyopencl
 git+https://github.com/inducer/islpy.git#egg=islpy
