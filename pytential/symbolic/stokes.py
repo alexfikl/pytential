@@ -546,9 +546,33 @@ class StokesletWrapperTornberg(StokesletWrapperBase):
 
     def apply(self, density_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
         stresslet = StressletWrapperTornberg(3, self.mu, self.nu)
-        return stresslet.apply_stokeslet_and_stresslet(density_vec_sym,
-            [0]*self.dim, [0]*self.dim, qbx_forced_limit, 1, 0,
-            extra_deriv_dirs)
+        return stresslet._apply_stokeslet(
+                density_vec_sym, qbx_forced_limit,
+                extra_deriv_dirs=extra_deriv_dirs)
+
+    def apply_stress(self, density_vec_sym, dir_vec_sym, qbx_forced_limit):
+        # NOTE: by default the Stresslet is
+        #
+        #       Sum_{j, k} IntG S_{ijk}(x, y) s_j(y) d_k(y)
+        #
+        # where the direction vector is given at the source, but for the stress
+        # we need to apply it at the target, so we compute
+        #
+        #       f_i = Sum_l d_l(x) Sum_{j, k} IntG S_{ijk}(x, y) s_j(y) delta_{l, k}
+        #
+        # where delta_{l, k} is the usual identity.
+
+        stresslet = StressletWrapperTornberg(3, self.mu, self.nu)
+
+        sym_expr = 0
+        for k in range(self.dim):
+            axis = [0] * self.dim
+            axis[k] = 1
+
+            sym_expr += dir_vec_sym[k] * stresslet._apply_stresslet(
+                    density_vec_sym, axis, qbx_forced_limit)
+
+        return sym_expr
 
 
 class StressletWrapperTornberg(StressletWrapperBase):
@@ -637,6 +661,18 @@ class StressletWrapperTornberg(StressletWrapperBase):
                 qbx_forced_limit=qbx_forced_limit)
 
         return sym_expr
+
+    def _apply_stokeslet(self,
+            density_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
+        return self.apply_stokeslet_and_stresslet(density_vec_sym,
+            [0]*self.dim, [0]*self.dim, qbx_forced_limit, 1, 0,
+            extra_deriv_dirs=extra_deriv_dirs)
+
+    def _apply_stresslet(self,
+            density_vec_sym, dir_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
+        return self.apply_stokeslet_and_stresslet([0]*self.dim,
+            density_vec_sym, dir_vec_sym, qbx_forced_limit, 0, 1,
+            extra_deriv_dirs=extra_deriv_dirs)
 
 # }}}
 
