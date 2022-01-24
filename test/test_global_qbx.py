@@ -79,6 +79,8 @@ def iter_elements(discr):
 
 def run_source_refinement_test(actx_factory, mesh, order,
         helmholtz_k=None, surface_name="surface", visualize=False):
+    if visualize:
+        logging.basicConfig(level=logging.INFO)
     actx = actx_factory()
 
     # {{{ initial geometry
@@ -91,7 +93,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
     lpot_source = QBXLayerPotentialSource(discr,
             qbx_order=order,  # not used in refinement
             fine_order=order)
-    places = GeometryCollection(lpot_source)
+    places = GeometryCollection(lpot_source, auto_where="source")
 
     logger.info("nelements: %d", discr.mesh.nelements)
     logger.info("ndofs: %d", discr.ndofs)
@@ -103,16 +105,32 @@ def run_source_refinement_test(actx_factory, mesh, order,
     def _visualize_quad_resolution(_places, dd, suffix):
         vis_discr = _places.get_discretization(dd.geometry, dd.discr_stage)
 
-        stretch = bind(_places,
-                sym._simplex_mapping_max_stretch_factor(
-                    _places.ambient_dim, with_elementwise_max=False),
+        radii = bind(_places,
+                sym.expansion_radii(_places.ambient_dim),
                 auto_where=dd)(actx)
 
-        from meshmode.discretization.visualization import make_visualizer
-        vis = make_visualizer(actx, vis_discr, order, force_equidistant=True)
-        vis.write_vtk_file(
-                f"global-qbx-source-refinement-{surface_name}-{order}-{suffix}.vtu",
-                [("stretch", stretch)],
+        basename = f"global-qbx-source-refinement-{surface_name}-{order}-{suffix}"
+        if places.ambient_dim == 2:
+            nodes = vis_discr.nodes()
+            theta = actx.np.arctan2(nodes[1], nodes[0])
+
+            theta = actx.to_numpy(flatten(theta, actx))
+            radii = actx.to_numpy(flatten(radii, actx))
+
+            import matplotlib.pyplot as plt
+            fig = plt.figure(figsize=(10, 10), dpi=300)
+            ax = fig.gca()
+
+            ax.plot(theta[:-1], radii[:-1])
+            ax.set_xlabel(r"$\theta$")
+            ax.set_ylabel("$r$")
+
+            fig.savefig(basename)
+        else:
+            from meshmode.discretization.visualization import make_visualizer
+            vis = make_visualizer(actx, vis_discr, order, force_equidistant=True)
+            vis.write_vtk_file(f"{basename}.vtu",
+                [("radii", radii)],
                 overwrite=True, use_high_order=True)
 
     kernel_length_scale = 5 / helmholtz_k if helmholtz_k else None
@@ -159,8 +177,11 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
     source_danger_zone_radii = actx.to_numpy(flatten(
             bind(
-                places,
-                sym._source_danger_zone_radii(ambient_dim, dofdesc=dd.to_stage2())
+                places, sym.ElementwiseMax(
+                    sym._source_danger_zone_radii(
+                        ambient_dim, dofdesc=dd.to_stage2()),
+                    dofdesc=dd.to_stage2().copy(granularity=sym.GRANULARITY_ELEMENT)
+                    )
                 )(actx), actx)
             )
     quad_res = actx.to_numpy(flatten(
@@ -173,7 +194,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
     def check_disk_undisturbed_by_sources(centers_panel, sources_panel):
         if centers_panel.element_nr == sources_panel.element_nr:
             # Same panel
-            return
+            return True
 
         my_int_centers = int_centers[:, centers_panel.discr_slice]
         my_ext_centers = ext_centers[:, centers_panel.discr_slice]
@@ -193,9 +214,20 @@ def run_source_refinement_test(actx_factory, mesh, order,
         # A center cannot be closer to another panel than to its originating
         # panel.
 
-        rad = expansion_radii[centers_panel.discr_slice]
-        assert (dist >= rad * (1-expansion_disturbance_tolerance)).all(), \
-                (dist, rad, centers_panel.element_nr, sources_panel.element_nr)
+        rad = (
+                (1 - expansion_disturbance_tolerance)
+                * expansion_radii[centers_panel.discr_slice])
+
+        is_undisturbed = np.all(dist >= rad)
+        if not is_undisturbed:
+            logger.info("FAILED: centers_panel %3d sources_panel %3d",
+                    centers_panel.element_nr, sources_panel.element_nr)
+            logger.info("radius [%s] > %.12e",
+                    ", ".join([f"{r:.12e}" for r in rad]), dist)
+            logger.info("radius [%s]",
+                    ", ".join([f"{str(dist>=r):>18}" for r in rad]))
+
+        return is_undisturbed
 
     def check_sufficient_quadrature_resolution(centers_panel, sources_panel):
         dz_radius = source_danger_zone_radii[sources_panel.element_nr]
@@ -217,20 +249,35 @@ def run_source_refinement_test(actx_factory, mesh, order,
         # Criterion:
         # The quadrature contribution from each panel is as accurate
         # as from the center's own source panel.
-        assert dist >= dz_radius, \
-                (dist, dz_radius, centers_panel.element_nr, sources_panel.element_nr)
+
+        is_quadratured = dist >= dz_radius
+        if not is_quadratured:
+            logger.info("FAILED: centers_panel %3d sources_panel %3d",
+                    centers_panel.element_nr, sources_panel.element_nr)
+            logger.info("dist %.12e dz_radius %.12e", dist, dz_radius)
+
+        return is_quadratured
 
     def check_quad_res_to_helmholtz_k_ratio(panel):
         # Check wavenumber to panel size ratio.
-        assert quad_res[panel.element_nr] * helmholtz_k <= 5
+        return quad_res[panel.element_nr] * helmholtz_k <= 5
 
     for panel_1 in iter_elements(stage1_density_discr):
+        success = True
         for panel_2 in iter_elements(stage1_density_discr):
-            check_disk_undisturbed_by_sources(panel_1, panel_2)
+            result = check_disk_undisturbed_by_sources(panel_1, panel_2)
+            success = success and result
+        assert success, "'check_disk_undisturbed_by_sources' failed"
+
+        success = True
         for panel_2 in iter_elements(quad_stage2_density_discr):
-            check_sufficient_quadrature_resolution(panel_1, panel_2)
+            result = check_sufficient_quadrature_resolution(panel_1, panel_2)
+            success = success and result
+        assert success, "'check_sufficient_source_quadrature_resolution' failed"
+
         if helmholtz_k is not None:
-            check_quad_res_to_helmholtz_k_ratio(panel_1)
+            success = check_quad_res_to_helmholtz_k_ratio(panel_1)
+            assert success, "'check_quad_res_to_helmholtz_k_ratio' failed"
 
     # }}}
 
@@ -238,7 +285,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
 
 @pytest.mark.parametrize(("curve_name", "curve_f", "nelements"), [
-    ("20-to-1 ellipse", partial(mgen.ellipse, 20), 100),
+    ("20-to-1-ellipse", partial(mgen.ellipse, 20), 100),
     ("horseshoe", horseshoe, 64),
     ])
 def test_source_refinement_2d(actx_factory,

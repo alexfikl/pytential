@@ -310,9 +310,12 @@ class RefinerWrangler(TreeWranglerBase):
 
         from pytential import bind, sym
         center_danger_zone_radii = flatten(
-            bind(stage1_density_discr,
-                sym.expansion_radii(stage1_density_discr.ambient_dim,
-                    granularity=sym.GRANULARITY_CENTER))(self.array_context),
+            bind(
+                stage1_density_discr,
+                sym.interp(None, sym.GRANULARITY_CENTER, sym.ElementwiseMax(
+                    sym.expansion_radii(stage1_density_discr.ambient_dim),
+                    ))
+                )(self.array_context),
             self.array_context)
 
         evt = knl(
@@ -829,7 +832,7 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
         debug = lpot_source.debug
 
     if expansion_disturbance_tolerance is None:
-        expansion_disturbance_tolerance = 0.025
+        expansion_disturbance_tolerance = 0.05
 
     if force_stage2_uniform_refinement_rounds is None:
         force_stage2_uniform_refinement_rounds = 0
