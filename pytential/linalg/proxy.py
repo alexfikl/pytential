@@ -21,7 +21,7 @@ THE SOFTWARE.
 """
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import numpy.linalg as la
@@ -31,6 +31,7 @@ from meshmode.discretization import Discretization
 from meshmode.dof_array import DOFArray
 
 from pytools import memoize_in
+from pytential.qbx import QBXLayerPotentialSource
 from pytential.linalg.utils import BlockIndexRanges
 
 import loopy as lp
@@ -126,32 +127,8 @@ def _generate_unit_sphere(ambient_dim: int, approx_npoints: int) -> np.ndarray:
         t = np.linspace(0.0, 2.0 * np.pi, approx_npoints)
         points = np.vstack([np.cos(t), np.sin(t)])
     elif ambient_dim == 3:
-        # https://www.cmu.edu/biolphys/deserno/pdf/sphere_equi.pdf
-        # code by Matt Wala from
-        # https://github.com/mattwala/gigaqbx-accuracy-experiments/blob/d56ed063ffd7843186f4fe05d2a5b5bfe6ef420c/translation_accuracy.py#L23
-        a = 4.0 * np.pi / approx_npoints
-        m_theta = int(np.round(np.pi / np.sqrt(a)))
-        d_theta = np.pi / m_theta
-        d_phi = a / d_theta
-
-        points = []
-        for m in range(m_theta):
-            theta = np.pi * (m + 0.5) / m_theta
-            m_phi = int(np.round(2.0 * np.pi * np.sin(theta) / d_phi))
-
-            for n in range(m_phi):
-                phi = 2.0 * np.pi * n / m_phi
-                points.append(np.array([np.sin(theta) * np.cos(phi),
-                                        np.sin(theta) * np.sin(phi),
-                                        np.cos(theta)]))
-
-        for i in range(ambient_dim):
-            for sign in [-1, 1]:
-                pole = np.zeros(ambient_dim)
-                pole[i] = sign
-                points.append(pole)
-
-        points = np.array(points).T
+        from pytools import sphere_sample_equidistant
+        points = sphere_sample_equidistant(approx_npoints, r=1)
     else:
         raise ValueError("ambient_dim > 3 not supported.")
 
@@ -173,23 +150,26 @@ class BlockProxyPoints:
 
     .. attribute:: points
 
-        A concatenated list of all the proxy points. Can be sliced into
-        using :attr:`indices` (shape ``(dim, nproxy_per_block * nblocks)``).
+        A concatenated array of all the proxy points. Can be sliced into
+        using :attr:`indices` (shape ``(dim, nproxies)``).
 
     .. attribute:: centers
 
-        A list of all the proxy ball centers (shape ``(dim, nblocks)``).
+        An array of all the proxy ball centers (shape ``(dim, nblocks)``).
 
     .. attribute:: radii
 
-        A list of all the proxy ball radii (shape ``(nblocks,)``).
+        An array of all the proxy ball radii (shape ``(nblocks,)``).
 
     .. attribute:: nblocks
-    .. attribute:: nproxy_per_block
+
+    .. automethod:: __init__
     .. automethod:: to_numpy
     """
 
+    lpot_source: QBXLayerPotentialSource
     srcindices: BlockIndexRanges
+
     indices: BlockIndexRanges
     points: np.ndarray
     centers: np.ndarray
@@ -198,10 +178,6 @@ class BlockProxyPoints:
     @property
     def nblocks(self) -> int:
         return self.srcindices.nblocks
-
-    @property
-    def nproxy_per_block(self) -> int:
-        return self.points[0].shape[0] // self.nblocks
 
     def to_numpy(self, actx: PyOpenCLArrayContext) -> "BlockProxyPoints":
         from arraycontext import to_numpy
@@ -217,11 +193,13 @@ def make_compute_block_centers_knl(
     @memoize_in(actx, (make_compute_block_centers_knl, ndim, norm_type))
     def prg():
         if norm_type == "l2":
+            # NOTE: computes first-order approximation of the source centroids
             insns = """
             proxy_center[idim, irange] = 1.0 / npoints \
                     * simul_reduce(sum, i, sources[idim, srcindices[i + ioffset]])
             """
         elif norm_type == "linf":
+            # NOTE: computes the centers of the bounding box
             insns = """
             <> bbox_max = \
                     simul_reduce(max, i, sources[idim, srcindices[i + ioffset]])
@@ -275,10 +253,14 @@ class ProxyGeneratorBase:
     .. automethod:: __call__
     """
 
-    def __init__(self, places,
+    def __init__(
+            self, places,
             approx_nproxy: Optional[int] = None,
             radius_factor: Optional[float] = None,
-            norm_type: str = "linf"):
+            norm_type: str = "linf",
+
+            _generate_ref_proxies: Optional[Callable[[int], np.ndarray]] = None,
+            ) -> None:
         """
         :param approx_nproxy: desired number of proxy points. In higher
             dimensions, it is not always possible to construct a proxy ball
@@ -289,16 +271,33 @@ class ProxyGeneratorBase:
         :param norm_type: type of the norm used to compute the centers of
             each block. Supported values are ``"linf"`` and ``"l2"``.
         """
+        if _generate_ref_proxies is None:
+            from functools import partial
+            _generate_ref_proxies = partial(
+                    _generate_unit_sphere, places.ambient_dim)
+
         from pytential import GeometryCollection
         if not isinstance(places, GeometryCollection):
             places = GeometryCollection(places)
 
+        if norm_type not in ("l2", "linf"):
+            raise ValueError(
+                    f"unsupported norm type: '{norm_type}' "
+                    + "(expected one of 'l2' or 'linf')")
+
+        if radius_factor is None:
+            # FIXME: this is a fairly arbitrary value
+            radius_factor = 1.1
+
+        if approx_nproxy is None:
+            # FIXME: this is a fairly arbitrary value
+            approx_nproxy = 32
+
         self.places = places
-        self.radius_factor = 1.1 if radius_factor is None else radius_factor
+        self.radius_factor = radius_factor
         self.norm_type = norm_type
 
-        approx_nproxy = 32 if approx_nproxy is None else approx_nproxy
-        self.ref_points = _generate_unit_sphere(self.ambient_dim, approx_nproxy)
+        self.ref_points = _generate_ref_proxies(approx_nproxy)
 
     @property
     def ambient_dim(self) -> int:
@@ -362,8 +361,8 @@ class ProxyGeneratorBase:
         pxy_nr_base = 0
 
         for i in range(indices.nblocks):
-            bball = radii[i] * self.ref_points + centers[:, i].reshape(-1, 1)
-            proxies[:, pxy_nr_base:pxy_nr_base + self.nproxy] = bball
+            points = radii[i] * self.ref_points + centers[:, i].reshape(-1, 1)
+            proxies[:, pxy_nr_base:pxy_nr_base + self.nproxy] = points
 
             pxy_nr_base += self.nproxy
 
@@ -375,6 +374,7 @@ class ProxyGeneratorBase:
         from arraycontext import freeze, from_numpy
         from pytential.linalg import make_block_index_from_array
         return BlockProxyPoints(
+                lpot_source=self.places.get_geometry(source_dd.geometry),
                 srcindices=indices,
                 indices=make_block_index_from_array(pxyindices, pxyranges),
                 points=freeze(from_numpy(proxies, actx), actx),
@@ -590,33 +590,34 @@ def gather_block_neighbor_points(
     indices = pxy.srcindices
 
     nbrindices = np.empty(indices.nblocks, dtype=object)
-    for iproxy in range(indices.nblocks):
+    for iblock in range(indices.nblocks):
         # get list of boxes intersecting the current ball
-        istart = query.leaves_near_ball_starts[iproxy]
-        iend = query.leaves_near_ball_starts[iproxy + 1]
+        istart = query.leaves_near_ball_starts[iblock]
+        iend = query.leaves_near_ball_starts[iblock + 1]
         iboxes = query.leaves_near_ball_lists[istart:iend]
 
         if (iend - istart) <= 0:
-            nbrindices[iproxy] = np.empty(0, dtype=np.int64)
+            nbrindices[iblock] = np.empty(0, dtype=np.int64)
             continue
 
         # get nodes inside the boxes
         istart = tree.box_source_starts[iboxes]
         iend = istart + tree.box_source_counts_cumul[iboxes]
-        isources = np.hstack([np.arange(s, e)
-                              for s, e in zip(istart, iend)])
-        nodes = np.vstack([tree.sources[idim][isources]
-                           for idim in range(discr.ambient_dim)])
+        isources = np.hstack([np.arange(s, e) for s, e in zip(istart, iend)])
+        nodes = np.vstack([s[isources] for s in tree.sources])
         isources = tree.user_source_ids[isources]
 
         # get nodes inside the ball but outside the current range
-        center = pxycenters[:, iproxy].reshape(-1, 1)
-        radius = pxyradii[iproxy]
+        # FIXME: this assumes that only the points in `pxy.srcindices` should
+        # count as neighbors, not all the nodes in the discretization.
+        # FIXME: it also assumes that all the indices are sorted?
+        center = pxycenters[:, iblock].reshape(-1, 1)
+        radius = pxyradii[iblock]
         mask = ((la.norm(nodes - center, axis=0) < radius)
-                & ((isources < indices.ranges[iproxy])
-                    | (indices.ranges[iproxy + 1] <= isources)))
+                & ((isources < indices.ranges[iblock])
+                    | (indices.ranges[iblock + 1] <= isources)))
 
-        nbrindices[iproxy] = indices.indices[isources[mask]]
+        nbrindices[iblock] = indices.indices[isources[mask]]
 
     # }}}
 
