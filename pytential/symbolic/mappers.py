@@ -105,6 +105,8 @@ class IdentityMapper(IdentityMapperBase):
     map_node_coordinate_component = map_ones
     map_parametrization_gradient = map_ones
     map_parametrization_derivative = map_ones
+    map_is_shape_class = map_ones
+    map_error_expression = map_ones
 
     # }}}
 
@@ -135,11 +137,6 @@ class IdentityMapper(IdentityMapperBase):
 
         return type(expr)(expr.from_dd, expr.to_dd, operand)
 
-    def map_shape_discretization_property(self, expr):
-        return type(expr)({
-            k: self.rec(v) for k, v in expr.shape_name_to_expr.items()
-            }, dofdesc=expr.dofdesc)
-
 
 class CombineMapper(CombineMapperBase):
     def map_node_sum(self, expr):
@@ -166,10 +163,10 @@ class CombineMapper(CombineMapperBase):
                 for name_expr in expr.extra_vars.values())
                 ])
 
-    def map_shape_discretization_property(self, expr):
-        return self.combine([
-            self.rec(v) for v in expr.shape_name_to_expr.values()
-            ])
+    def map_is_shape_class(self, expr):
+        return set()
+
+    map_error_expression = map_is_shape_class
 
 
 class Collector(CollectorBase, CombineMapper):
@@ -350,10 +347,11 @@ class LocationTagger(CSECachingMapperMixin, IdentityMapper):
 
         return type(expr)(from_dd, to_dd, self.operand_rec(expr.operand))
 
-    def map_shape_discretization_property(self, expr):
-        return type(expr)({
-            k: self.rec(v) for k, v in expr.shape_name_to_expr.items()
-            }, dofdesc=self._default_dofdesc(expr.dofdesc))
+    def map_is_shape_class(self, expr):
+        return type(expr)(expr.shape, self._default_dofdesc(expr.dofdesc))
+
+    def map_error_expression(self, expr):
+        return expr
 
     def operand_rec(self, expr):
         return self.rec(expr)
@@ -759,6 +757,10 @@ class StringifyMapper(BaseStringifyMapper):
                 stringify_where(expr.from_dd),
                 stringify_where(expr.to_dd),
                 self.rec(expr.operand, PREC_PRODUCT))
+
+    def map_is_shape_class(self, expr, enclosing_prec):
+        return "IsShape[{}]({})".format(stringify_where(expr.dofdesc),
+                                        expr.shape.__name__)
 
 # }}}
 

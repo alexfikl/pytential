@@ -281,7 +281,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
         elif isinstance(operand, (int, float, complex, np.number)):
             return operand
         else:
-            raise TypeError("cannot interpolate `{}`".format(type(operand)))
+            raise TypeError(f"cannot interpolate '{type(operand).__name__}'")
 
     def map_shape_discretization_property(self, expr):
         discr = self.places.get_discretization(
@@ -323,6 +323,26 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
         return rec
 
     # }}}
+
+    def map_error_expression(self, expr):
+        raise RuntimeError(expr.message)
+
+    def map_is_shape_class(self, expr):
+        discr = self.places.get_discretization(
+            expr.dofdesc.geometry, expr.dofdesc.discr_stage)
+
+        from pytools import is_single_valued
+        if not is_single_valued(type(grp.mesh_el_group) for grp in discr.groups):
+            # FIXME Conceivably, one could stick per-group bools into a DOFArray.
+            raise NotImplementedError(
+                    "non-homogeneous element groups are not supported")
+
+        from meshmode.mesh import _ModepyElementGroup
+        meg = discr.groups[0].mesh_el_group
+        if isinstance(meg, _ModepyElementGroup):
+            return isinstance(meg._modepy_shape, expr.shape)
+        else:
+            raise TypeError(f"element type not supported: '{type(meg).__name__}'")
 
     def exec_assign(self, actx: PyOpenCLArrayContext, insn, bound_expr, evaluate):
         return [(name, evaluate(expr))
@@ -802,8 +822,8 @@ class GeometryCollection:
 
         if key not in cache:
             raise KeyError(
-                    "cached discretization does not exist on '{geometry}'"
-                    "for stage '{discr_stage}'")
+                    f"cached discretization does not exist on '{geometry}' "
+                    f"for stage '{discr_stage}'")
 
         return cache[key]
 

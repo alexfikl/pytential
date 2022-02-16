@@ -95,6 +95,11 @@ DOF Description
 .. autoclass:: DOFDescriptor
 .. autofunction:: as_dofdesc
 
+Diagnostics
+^^^^^^^^^^^
+
+.. autoclass:: ErrorExpression
+
 .. _placeholders:
 
 Placeholders
@@ -137,6 +142,7 @@ Functions
 Discretization properties
 ^^^^^^^^^^^^^^^^^^^^^^^^^
 
+.. autoclass:: IsShapeClass
 .. autoclass:: QWeight
 .. autofunction:: nodes
 .. autofunction:: parametrization_derivative
@@ -241,14 +247,6 @@ class DEFAULT_TARGET:                   # noqa: N801
     pass
 
 
-class QBX_SOURCE_PRE_STAGE:             # noqa: N801
-    """Symbolic identifier for the target discretization of a
-    :class:`pytential.qbx.QBXLayerPotentialSource`, that is the original
-    unrefined discretization.
-    """
-    pass
-
-
 class QBX_SOURCE_STAGE1:                # noqa: N801
     """Symbolic identifier for the Stage 1 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
@@ -324,8 +322,7 @@ class DOFDescriptor:
         if not (discr_stage is None
                 or discr_stage == QBX_SOURCE_STAGE1
                 or discr_stage == QBX_SOURCE_STAGE2
-                or discr_stage == QBX_SOURCE_QUAD_STAGE2
-                or discr_stage == QBX_SOURCE_PRE_STAGE):
+                or discr_stage == QBX_SOURCE_QUAD_STAGE2):
             raise ValueError(f"unknown discr stage tag: '{discr_stage}'")
 
         if not (granularity == GRANULARITY_NODE
@@ -409,15 +406,14 @@ def as_dofdesc(desc):
     if isinstance(desc, DOFDescriptor):
         return desc
 
-    if desc == QBX_SOURCE_STAGE1 \
-            or desc == QBX_SOURCE_STAGE2 \
-            or desc == QBX_SOURCE_QUAD_STAGE2 \
-            or desc == QBX_SOURCE_PRE_STAGE:
+    if (desc == QBX_SOURCE_STAGE1
+            or desc == QBX_SOURCE_STAGE2
+            or desc == QBX_SOURCE_QUAD_STAGE2):
         return DOFDescriptor(discr_stage=desc)
 
-    if desc == GRANULARITY_NODE \
-            or desc == GRANULARITY_CENTER \
-            or desc == GRANULARITY_ELEMENT:
+    if (desc == GRANULARITY_NODE
+            or desc == GRANULARITY_CENTER
+            or desc == GRANULARITY_ELEMENT):
         return DOFDescriptor(granularity=desc)
 
     return DOFDescriptor(geometry=desc)
@@ -448,6 +444,23 @@ class Expression(ExpressionBase):
     def make_stringifier(self, originating_stringifier=None):
         from pytential.symbolic.mappers import StringifyMapper
         return StringifyMapper()
+
+
+class ErrorExpression(Expression):
+    """An expression that, if evaluated, causes an error with the supplied
+    *message*.
+
+    .. automethod:: __init__
+    """
+    init_arg_names = ("message",)
+
+    def __init__(self, message):
+        self.message = message
+
+    def __getinitargs__(self):
+        return (self.message,)
+
+    mapper_method = intern("map_error_expression")
 
 
 def make_sym_mv(name, num_components):
@@ -486,10 +499,21 @@ class NumpyMathFunction(Function):
 
 
 class CLMathFunction(NumpyMathFunction):
+    _np_to_cl_names = {
+        "arcsin": "asin",
+        "arccos": "acos",
+        "arctan": "atan",
+        "arctan2": "atan2",
+        "asinh": "arcsinh",
+        "acosh": "arccosh",
+        "atanh": "arctanh",
+    }
+
     def __call__(self, *args, **kwargs):
         from warnings import warn
-        warn("CLMathFunction '{name}' is deprecated. Use NumpyMathFunction instead. "
-                "CLMathFunction will go away in 2022.",
+        cl_name = self._np_to_cl_names[self.name]
+        warn(f"'sym.{cl_name}' is deprecated. Use 'sym.{self.name}' instead. "
+                 "'sym.{cl_name}' will go away in 2022.",
                 DeprecationWarning, stacklevel=2)
 
         return super().__call__(*args, **kwargs)
@@ -532,9 +556,12 @@ exp = NumpyMathFunction("exp")
 log = NumpyMathFunction("log")
 
 
+# {{{ discretization properties
+
 class DiscretizationProperty(Expression):
-    """A quantity that depends exclusively on the discretization (and has no
-    further arguments.
+    """A quantity that depends exclusively on the discretization.
+
+    .. attribute:: dofdesc
     """
 
     init_arg_names = ("dofdesc",)
@@ -550,23 +577,25 @@ class DiscretizationProperty(Expression):
         return (self.dofdesc,)
 
 
-class _ShapeDiscretizationProperty(DiscretizationProperty):
-    init_arg_names = ("shape_name_to_expr", "dofdesc")
+class IsShapeClass(DiscretizationProperty):
+    """A predicate that is *True* if the elements of the discretization have
+    a unique type that matches :attr:`shape`.
 
-    def __init__(self, shape_name_to_expr, dofdesc=None):
-        if isinstance(shape_name_to_expr, tuple):
-            shape_name_to_expr = dict(shape_name_to_expr)
+    .. attribute:: shape
 
+        A :class:`modepy.Shape` subclass.
+    """
+    init_arg_names = ("shape", "dofdesc")
+
+    def __init__(self, shape, dofdesc) -> None:
         super().__init__(dofdesc)
-        self.shape_name_to_expr = shape_name_to_expr
+        self.shape = shape
 
     def __getinitargs__(self):
-        return (tuple(self.shape_name_to_expr.items()), self.dofdesc)
+        return (self.shape, self.dofdesc)
 
-    mapper_method = intern("map_shape_discretization_property")
+    mapper_method = intern("map_is_shape_class")
 
-
-# {{{ discretization properties
 
 class QWeight(DiscretizationProperty):
     """Bare quadrature weights (without Jacobians)."""
@@ -966,12 +995,10 @@ def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
 
     stretch_factors = [
             cse(sqrt(s), f"simplex_mapping_singval_{i}")
-            for i, s in enumerate(
-                _small_sym_mat_eigenvalues(
-                    # Multiply by 4 to compensate for equilateral reference
-                    # elements of side length 2. (J^T J contains two factors of
-                    # two.)
-                    4 * equi_pder_mat_jtj))]
+            # NOTE: multiply by 4 to compensate for equilateral reference
+            # elements of side length 2. (J^T J contains two factors of two.)
+            for i, s in enumerate(_small_sym_mat_eigenvalues(4 * equi_pder_mat_jtj))
+            ]
 
     from pymbolic.primitives import Max
     result = Max(tuple(stretch_factors))
@@ -979,7 +1006,7 @@ def _simplex_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     if with_elementwise_max:
         result = ElementwiseMax(result, dofdesc=dofdesc)
 
-    return cse(result, "simplex_mapping_max_stretch", cse_scope.DISCRETIZATION)
+    return result
 
 
 def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
@@ -994,7 +1021,7 @@ def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
             cse(sqrt(s), f"hypercube_mapping_singval_{i}")
             # NOTE: like for the simplex, we multiply `pder_mat` by 4 to
             # account for the side length of 2 in J^T J
-            for i, s in enumerate(_small_mat_eigenvalues(4.0 * pder_mat))
+            for i, s in enumerate(_small_sym_mat_eigenvalues(4.0 * pder_mat))
             ]
 
     from pymbolic.primitives import Max
@@ -1003,7 +1030,28 @@ def _hypercube_mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
     if with_elementwise_max:
         result = ElementwiseMax(result, dofdesc=dofdesc)
 
-    return cse(result, "hypercube_mapping_max_stretch", cse_scope.DISCRETIZATION)
+    return result
+
+
+def _mapping_max_stretch_factor(ambient_dim, dim=None, dofdesc=None,
+                                with_elementwise_max=True):
+    simplex_stretch_factor = _simplex_mapping_max_stretch_factor(
+        ambient_dim, dim, dofdesc=dofdesc,
+        with_elementwise_max=with_elementwise_max)
+    hypercube_stretch_factor = _hypercube_mapping_max_stretch_factor(
+        ambient_dim, dim, dofdesc=dofdesc,
+        with_elementwise_max=with_elementwise_max)
+
+    import modepy as mp
+    from pymbolic.primitives import If
+    stretch_factor = If(IsShapeClass(mp.Simplex, dofdesc),
+                        simplex_stretch_factor,
+                        If(IsShapeClass(mp.Hypercube, dofdesc),
+                           hypercube_stretch_factor,
+                           ErrorExpression("unknown reference element shape"))
+                        )
+
+    return cse(stretch_factor, "mapping_stretch_factor", cse_scope.DISCRETIZATION)
 
 
 def _max_curvature(ambient_dim, dim=None, dofdesc=None):
@@ -1033,10 +1081,11 @@ def _scaled_max_curvature(ambient_dim, dim=None, dofdesc=None):
     a threshold of about 0.8-1 will have high QBX truncation error.
     """
 
-    return _max_curvature(ambient_dim, dim, dofdesc=dofdesc) * \
-            _simplex_mapping_max_stretch_factor(ambient_dim, dim,
-                    dofdesc=dofdesc,
-                    with_elementwise_max=False)
+    return (
+        _max_curvature(ambient_dim, dim, dofdesc=dofdesc)
+        * _mapping_max_stretch_factor(ambient_dim, dim=dim, dofdesc=dofdesc,
+                                      with_elementwise_max=False)
+    )
 
 # }}}
 
@@ -1066,15 +1115,8 @@ def _quad_resolution(ambient_dim, dim=None, granularity=None, dofdesc=None):
     from_dd = as_dofdesc(dofdesc)
     to_dd = from_dd.copy(granularity=granularity)
 
-    simplex_stretch = _simplex_mapping_max_stretch_factor(
-            ambient_dim, dim=dim, dofdesc=from_dd)
-    hypercube_stretch = _hypercube_mapping_max_stretch_factor(
-            ambient_dim, dim=dim, dofdesc=from_dd)
-
-    return _ShapeDiscretizationProperty({
-        "simplex": interp(from_dd, to_dd, simplex_stretch),
-        "hypercube": interp(from_dd, to_dd, hypercube_stretch),
-        }, dofdesc=dofdesc)
+    stretch = _mapping_max_stretch_factor(ambient_dim, dim=dim, dofdesc=from_dd)
+    return interp(from_dd, to_dd, stretch)
 
 
 def _source_danger_zone_radii(ambient_dim, dim=None,
