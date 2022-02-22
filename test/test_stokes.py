@@ -29,7 +29,7 @@ from arraycontext import flatten
 from pytential import GeometryCollection, bind, sym
 from meshmode.discretization import Discretization
 from meshmode.discretization.poly_element import \
-        InterpolatoryQuadratureSimplexGroupFactory
+        InterpolatoryQuadratureGroupFactory
 from pytools.obj_array import make_obj_array
 from sumpy.symbolic import SpatialConstant
 
@@ -70,7 +70,7 @@ def run_exterior_stokes(actx_factory, *,
         ambient_dim, target_order, qbx_order, resolution,
         fmm_order=None,    # FIXME: FMM is slower than direct evaluation
         source_ovsmp=None,
-        radius=1.5,
+        radius=1.5, aspect_ratio=1.0,
         mu=1.0,
         nu=0.4,
         visualize=False,
@@ -90,18 +90,24 @@ def run_exterior_stokes(actx_factory, *,
     if ambient_dim == 2:
         from meshmode.mesh.generation import make_curve_mesh, ellipse
         mesh = make_curve_mesh(
-                lambda t: radius * ellipse(1.0, t),
+                lambda t: radius * ellipse(aspect_ratio, t),
                 np.linspace(0.0, 1.0, resolution + 1),
                 target_order)
     elif ambient_dim == 3:
         from meshmode.mesh.generation import generate_sphere
         mesh = generate_sphere(radius, target_order + 1,
                 uniform_refinement_rounds=resolution)
+
+        if abs(aspect_ratio - 1.0) > 1.0e-14:
+            from meshmode.mesh.processing import affine_map
+            mesh = affine_map(mesh, A=np.diag([
+                radius, radius / aspect_ratio, radius,
+                ]))
     else:
         raise ValueError(f"unsupported dimension: {ambient_dim}")
 
     pre_density_discr = Discretization(actx, mesh,
-            InterpolatoryQuadratureSimplexGroupFactory(target_order))
+            InterpolatoryQuadratureGroupFactory(target_order))
 
     from pytential.qbx import QBXLayerPotentialSource
     qbx = QBXLayerPotentialSource(pre_density_discr,

@@ -58,27 +58,31 @@ FAR_TARGET_DIST_FROM_SOURCE = 10
 
 @dataclass
 class ElementInfo:
-    element_nr: int
+    index: int
     discr_slice: slice
 
 
 def iter_elements(discr):
     discr_nodes_idx = 0
-    element_nr = 0
+    element_nr_base = 0
 
     for discr_group in discr.groups:
-        start = element_nr
+        start = element_nr_base
         for element_nr in range(start, start + discr_group.nelements):
             yield ElementInfo(
-                element_nr=element_nr,
+                index=element_nr,
                 discr_slice=slice(discr_nodes_idx,
                     discr_nodes_idx + discr_group.nunit_dofs))
 
             discr_nodes_idx += discr_group.nunit_dofs
 
+        element_nr_base += discr_group.nelements
+
 
 def run_source_refinement_test(actx_factory, mesh, order,
         helmholtz_k=None, surface_name="surface", visualize=False):
+    if visualize:
+        logging.basicConfig(level=logging.INFO)
     actx = actx_factory()
 
     # {{{ initial geometry
@@ -91,7 +95,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
     lpot_source = QBXLayerPotentialSource(discr,
             qbx_order=order,  # not used in refinement
             fine_order=order)
-    places = GeometryCollection(lpot_source)
+    places = GeometryCollection(lpot_source, auto_where="source")
 
     logger.info("nelements: %d", discr.mesh.nelements)
     logger.info("ndofs: %d", discr.ndofs)
@@ -100,15 +104,14 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
     # {{{ refined geometry
 
-    def _visualize_quad_resolution(_places, dd, suffix):
+    def _visualize_quad_resolution(dd, suffix):
         if dd.discr_stage is None:
             vis_discr = lpot_source.density_discr
         else:
-            vis_discr = _places.get_discretization(dd.geometry, dd.discr_stage)
+            vis_discr = places.get_discretization(dd.geometry, dd.discr_stage)
 
-        stretch = bind(_places,
-                sym._simplex_mapping_max_stretch_factor(
-                    _places.ambient_dim, with_elementwise_max=False),
+        stretch = bind(places,
+                sym._mapping_max_stretch_factor(places.ambient_dim),
                 auto_where=dd)(actx)
 
         from meshmode.discretization.visualization import make_visualizer
@@ -129,9 +132,9 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
     if visualize:
         dd = places.auto_source
-        _visualize_quad_resolution(places, dd.copy(discr_stage=None), "original")
-        _visualize_quad_resolution(places, dd.to_stage1(), "stage1")
-        _visualize_quad_resolution(places, dd.to_stage2(), "stage2")
+        _visualize_quad_resolution(dd.copy(discr_stage=None), "original")
+        _visualize_quad_resolution(dd.to_stage1(), "stage1")
+        _visualize_quad_resolution(dd.to_stage2(), "stage2")
 
     # }}}
 
@@ -159,11 +162,13 @@ def run_source_refinement_test(actx_factory, mesh, order,
         bind(places, sym.expansion_radii(ambient_dim))(actx), actx)
         )
 
-    dd = dd.copy(granularity=sym.GRANULARITY_ELEMENT)
-    source_danger_zone_radii = actx.to_numpy(flatten(
+    source_danger_zone_radii_by_element = actx.to_numpy(flatten(
             bind(
-                places,
-                sym._source_danger_zone_radii(ambient_dim, dofdesc=dd.to_stage2())
+                places, sym.ElementwiseMax(
+                    sym._source_danger_zone_radii(
+                        ambient_dim, dofdesc=dd.to_stage2()),
+                    dofdesc=dd.to_stage2().copy(granularity=sym.GRANULARITY_ELEMENT)
+                    )
                 )(actx), actx)
             )
     quad_res = actx.to_numpy(flatten(
@@ -173,18 +178,60 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
     # {{{ check if satisfying criteria
 
-    def check_disk_undisturbed_by_sources(centers_panel, sources_panel):
-        if centers_panel.element_nr == sources_panel.element_nr:
-            # Same panel
-            return
+    def check_disk_undisturbed_by_sources(centers_element, sources_element):
+        if centers_element.index == sources_element.index:
+            # Same element
+            return True
 
-        my_int_centers = int_centers[:, centers_panel.discr_slice]
-        my_ext_centers = ext_centers[:, centers_panel.discr_slice]
+        # NOTE: centers.shape: (ambient_dim, nunit_dofs)
+        my_int_centers = int_centers[:, centers_element.discr_slice]
+        my_ext_centers = ext_centers[:, centers_element.discr_slice]
+        # NOTE: all_centers.shape: (ambient_dim, 2*nunit_dofs)
         all_centers = np.append(my_int_centers, my_ext_centers, axis=-1)
 
-        nodes = stage1_density_nodes[:, sources_panel.discr_slice]
+        nodes = stage1_density_nodes[:, sources_element.discr_slice]
 
-        # =distance(centers of panel 1, panel 2)
+        # NOTE: computes distance(centers of element 1, element 2)
+        #       dist.shape: (2*nunit_dofs,)
+        dist = np.min(
+                la.norm(
+                    (all_centers[..., np.newaxis] - nodes[:, np.newaxis, ...]).T,
+                    axis=-1),
+                axis=0)
+
+        # Criterion:
+        # A center cannot be closer to another element than to its originating
+        # element.
+
+        # NOTE: rad.shape: (2*nunit_dofs,)
+        rad = (
+                (1 - expansion_disturbance_tolerance)
+                * np.tile(expansion_radii[centers_element.discr_slice], 2))
+
+        is_undisturbed = np.all(dist >= rad)
+        if not is_undisturbed:
+            logger.info("FAILED: centers_element %3d sources_element %3d",
+                    centers_element.index, sources_element.index)
+            logger.info("radius [%s] > %.12e",
+                    ", ".join([f"{r:.12e}" for r in rad]), dist)
+            logger.info("radius [%s]",
+                    ", ".join([f"{str(dist>=r):>18}" for r in rad]))
+
+        return is_undisturbed
+
+    def check_sufficient_quadrature_resolution(centers_element, sources_element):
+        dz_radius = source_danger_zone_radii_by_element[sources_element.index]
+
+        # NOTE: centers.shape: (ambient_dim, nunit_dofs)
+        my_int_centers = int_centers[:, centers_element.discr_slice]
+        my_ext_centers = ext_centers[:, centers_element.discr_slice]
+        # NOTE: all_centers.shape: (ambient_dim, 2*nunit_dofs)
+        all_centers = np.append(my_int_centers, my_ext_centers, axis=-1)
+
+        # NOTE: nodes.shape: (ambient_dim, nunit_quad_dofs)
+        nodes = quad_stage2_density_nodes[:, sources_element.discr_slice]
+
+        # NOTE: computes min(distance(centers of element 1, element 2))
         dist = (
             la.norm((
                     all_centers[..., np.newaxis]
@@ -193,47 +240,37 @@ def run_source_refinement_test(actx_factory, mesh, order,
             .min())
 
         # Criterion:
-        # A center cannot be closer to another panel than to its originating
-        # panel.
+        # The quadrature contribution from each element is as accurate
+        # as from the center's own source element.
 
-        rad = expansion_radii[centers_panel.discr_slice]
-        assert (dist >= rad * (1-expansion_disturbance_tolerance)).all(), \
-                (dist, rad, centers_panel.element_nr, sources_panel.element_nr)
+        is_quadratured = dist >= dz_radius
+        if not is_quadratured:
+            logger.info("FAILED: centers_element %3d sources_element %3d",
+                    centers_element.index, sources_element.index)
+            logger.info("dist %.12e dz_radius %.12e", dist, dz_radius)
 
-    def check_sufficient_quadrature_resolution(centers_panel, sources_panel):
-        dz_radius = source_danger_zone_radii[sources_panel.element_nr]
+        return is_quadratured
 
-        my_int_centers = int_centers[:, centers_panel.discr_slice]
-        my_ext_centers = ext_centers[:, centers_panel.discr_slice]
-        all_centers = np.append(my_int_centers, my_ext_centers, axis=-1)
+    def check_quad_res_to_helmholtz_k_ratio(element):
+        # Check wavenumber to element size ratio.
+        return quad_res[element.index] * helmholtz_k <= 5
 
-        nodes = quad_stage2_density_nodes[:, sources_panel.discr_slice]
+    for element_1 in iter_elements(stage1_density_discr):
+        success = True
+        for element_2 in iter_elements(stage1_density_discr):
+            result = check_disk_undisturbed_by_sources(element_1, element_2)
+            success = success and result
+        assert success, "'check_disk_undisturbed_by_sources' failed"
 
-        # =distance(centers of panel 1, panel 2)
-        dist = (
-            la.norm((
-                    all_centers[..., np.newaxis]
-                    - nodes[:, np.newaxis, ...]).T,
-                axis=-1)
-            .min())
+        success = True
+        for element_2 in iter_elements(quad_stage2_density_discr):
+            result = check_sufficient_quadrature_resolution(element_1, element_2)
+            success = success and result
+        assert success, "'check_sufficient_source_quadrature_resolution' failed"
 
-        # Criterion:
-        # The quadrature contribution from each panel is as accurate
-        # as from the center's own source panel.
-        assert dist >= dz_radius, \
-                (dist, dz_radius, centers_panel.element_nr, sources_panel.element_nr)
-
-    def check_quad_res_to_helmholtz_k_ratio(panel):
-        # Check wavenumber to panel size ratio.
-        assert quad_res[panel.element_nr] * helmholtz_k <= 5
-
-    for panel_1 in iter_elements(stage1_density_discr):
-        for panel_2 in iter_elements(stage1_density_discr):
-            check_disk_undisturbed_by_sources(panel_1, panel_2)
-        for panel_2 in iter_elements(quad_stage2_density_discr):
-            check_sufficient_quadrature_resolution(panel_1, panel_2)
         if helmholtz_k is not None:
-            check_quad_res_to_helmholtz_k_ratio(panel_1)
+            success = check_quad_res_to_helmholtz_k_ratio(element_1)
+            assert success, "'check_quad_res_to_helmholtz_k_ratio' failed"
 
     # }}}
 
@@ -241,7 +278,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
 
 
 @pytest.mark.parametrize(("curve_name", "curve_f", "nelements"), [
-    ("20-to-1 ellipse", partial(mgen.ellipse, 20), 100),
+    ("20-to-1-ellipse", partial(mgen.ellipse, 20), 100),
     ("horseshoe", horseshoe, 64),
     ])
 def test_source_refinement_2d(actx_factory,
@@ -370,13 +407,14 @@ def test_target_association(actx_factory, curve_name, curve_f, nelements,
     code_container = TargetAssociationCodeContainer(
             actx, TreeCodeContainer(actx))
 
-    target_assoc = (associate_targets_to_qbx_centers(
-            places,
-            places.auto_source,
-            code_container.get_wrangler(actx),
-            target_discrs,
-            target_association_tolerance=1e-10)
-        .get(queue=actx.queue))
+    target_assoc = (
+            associate_targets_to_qbx_centers(
+                places,
+                places.auto_source,
+                code_container.get_wrangler(actx),
+                target_discrs,
+                target_association_tolerance=1e-10)
+            ).get(queue=actx.queue)
 
     expansion_radii = actx.to_numpy(flatten(
             bind(places, sym.expansion_radii(ambient_dim,
@@ -421,15 +459,13 @@ def test_target_association(actx_factory, curve_name, curve_f, nelements,
     # within the allowable distance.
     def check_close_targets(centers, targets, true_side,
                             target_to_center, target_to_side_result,
-                            tgt_slice):
-        targets_have_centers = (target_to_center >= 0).all()
+                            tgt_slice, tol=1.0e-3):
+        targets_have_centers = np.all(target_to_center >= 0)
         assert targets_have_centers
+        assert np.all(target_to_side_result == true_side)
 
-        assert (target_to_side_result == true_side).all()
-
-        TOL = 1e-3
         dists = la.norm((targets.T - centers.T[target_to_center]), axis=1)
-        assert (dists <= (1 + TOL) * expansion_radii[target_to_center]).all()
+        assert np.all(dists <= (1 + tol) * expansion_radii[target_to_center])
 
     # Center side order = -1, 1, -1, 1, ...
     target_to_center_side = 2 * (target_assoc.target_to_center % 2) - 1
@@ -463,7 +499,7 @@ def test_target_association(actx_factory, curve_name, curve_f, nelements,
         vol_ext_slice)
 
     # Checks that far targets are not assigned a center.
-    assert (target_assoc.target_to_center[far_slice] == -1).all()
+    assert np.all(target_assoc.target_to_center[far_slice] == -1)
 
     # }}}
 

@@ -23,8 +23,6 @@ THE SOFTWARE.
 """
 
 import numpy as np
-import pyopencl as cl
-import pyopencl.array  # noqa
 
 import loopy as lp
 from loopy.version import MOST_RECENT_LANGUAGE_VERSION
@@ -45,11 +43,11 @@ __doc__ = """
 """
 
 
-# {{{ (panel-based) unregularized layer potential source
+# {{{ (element-based) unregularized layer potential source
 
 class UnregularizedLayerPotentialSource(LayerPotentialSourceBase):
     """A source discretization for a layer potential discretized with a Nyström
-    method that uses panel-based quadrature and does not modify the kernel.
+    method that uses element-based quadrature and does not modify the kernel.
 
     .. attribute:: fmm_level_to_order
     """
@@ -389,11 +387,11 @@ class _FMMGeometryData:
 
     @memoize_method
     def traversal(self):
-        with cl.CommandQueue(self.cl_context) as queue:
-            trav, _ = self.code_getter.build_traversal(queue, self.tree(),
-                    debug=self.debug)
+        actx = self.array_context
+        trav, _ = self.code_getter.build_traversal(
+                actx.queue, self.tree(), debug=self.debug)
 
-            return trav
+        return trav.with_queue(None)
 
     @memoize_method
     def tree(self):
@@ -412,7 +410,7 @@ class _FMMGeometryData:
         nsources = lpot_src.density_discr.ndofs
         nparticles = nsources + target_info.ntargets
 
-        refine_weights = cl.array.zeros(actx.queue, nparticles, dtype=np.int32)
+        refine_weights = actx.zeros(nparticles, dtype=np.int32)
         refine_weights[:nsources] = 1
         refine_weights.finish()
 
