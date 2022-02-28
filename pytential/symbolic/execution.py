@@ -62,22 +62,6 @@ class EvaluationMapperBoundOpCacheKey:
 
 # {{{ evaluation mapper base (shared, between actual eval and cost model)
 
-def mesh_el_view(mesh, group_nr, global_array):
-    """Return a view of *global_array* of shape
-    ``(..., mesh.groups[group_nr].nelements)``
-    where *global_array* is of shape ``(..., nelements)``,
-    where *nelements* is the global (per-mesh) element count.
-    """
-
-    group = mesh.groups[group_nr]
-
-    return global_array[
-        ..., group.element_nr_base:group.element_nr_base + group.nelements] \
-        .reshape(
-            global_array.shape[:-1]
-            + (group.nelements,))
-
-
 class EvaluationMapperBase(PymbolicEvaluationMapper):
     def __init__(self, bound_expr, actx: PyOpenCLArrayContext, context=None,
             target_geometry=None,
@@ -184,10 +168,9 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
         assert operand.shape == (len(discr.groups),)
 
         def _reduce(knl, result):
-            for grp in discr.groups:
-                self.array_context.call_loopy(knl,
-                        operand=operand[grp.index],
-                        result=result[grp.index])
+            for g_operand, g_result in zip(operand, result):
+                self.array_context.call_loopy(
+                    knl, operand=g_operand, result=g_result)
 
             return result
 
