@@ -22,6 +22,10 @@ autodoc_type_aliases = {
         "DOFDescriptorLike": "pytential.symbolic.dof_desc.DOFDescriptorLike",
         }
 
+nitpick_ignore_regex = [
+    ["py:class", r"_ProxyNeighborEvaluationResult"],
+    ]
+
 intersphinx_mapping = {
     "https://docs.python.org/3/": None,
     "https://numpy.org/doc/stable/": None,
