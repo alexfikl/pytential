@@ -33,6 +33,9 @@ from pytools import memoize_in
 from pytential import GeometryCollection, bind, sym
 from pytential.symbolic.dof_desc import DOFDescriptorLike
 from pytential.linalg.utils import IndexList
+from pytential.source import PointPotentialSource
+from pytential.target import PointsTarget
+from pytential.qbx import QBXLayerPotentialSource
 
 import loopy as lp
 from loopy.version import MOST_RECENT_LANGUAGE_VERSION
@@ -44,7 +47,10 @@ Proxy Point Generation
 
 .. currentmodule:: pytential.linalg
 
+.. autoclass:: ProxyPointSource
+.. autoclass:: ProxyPointTarget
 .. autoclass:: ProxyClusterGeometryData
+
 .. autoclass:: ProxyGeneratorBase
 .. autoclass:: ProxyGenerator
 .. autoclass:: QBXProxyGenerator
@@ -122,28 +128,49 @@ def partition_by_nodes(
 # }}}
 
 
-# {{{ proxy point generator
+# {{{ proxy points
 
-def _generate_unit_sphere(ambient_dim: int, approx_npoints: int) -> np.ndarray:
-    """Generate uniform points on a unit sphere.
-
-    :arg ambient_dim: dimension of the ambient space.
-    :arg approx_npoints: approximate number of points to generate. If the
-        ambient space is 3D, this will not generate the exact number of points.
-    :return: array of shape ``(ambient_dim, npoints)``, where ``npoints``
-        will not generally be the same as ``approx_npoints``.
+class ProxyPointSource(PointPotentialSource):
+    """
+    .. automethod:: get_expansion_for_qbx_direct_eval
     """
 
-    if ambient_dim == 2:
-        t = np.linspace(0.0, 2.0 * np.pi, approx_npoints)
-        points = np.vstack([np.cos(t), np.sin(t)])
-    elif ambient_dim == 3:
-        from pytools import sphere_sample_equidistant
-        points = sphere_sample_equidistant(approx_npoints, r=1)
-    else:
-        raise ValueError("ambient_dim > 3 not supported.")
+    def __init__(self,
+            lpot_source: QBXLayerPotentialSource,
+            proxies: np.ndarray) -> None:
+        """
+        :arg lpot_source: the layer potential for which the proxy are constructed.
+        :arg proxies: an array of shape ``(ambient_dim, nproxies)`` containing
+            the proxy points.
+        """
+        assert proxies.shape[0] == lpot_source.ambient_dim
 
-    return points
+        super().__init__(proxies)
+        self.lpot_source = lpot_source
+
+    def get_expansion_for_qbx_direct_eval(self, base_kernel, target_kernels):
+        """Wrapper around
+        ``pytential.qbx.QBXLayerPotentialSource.get_expansion_for_qbx_direct_eval``
+        to allow this class to be used by the matrix builders.
+        """
+        return self.lpot_source.get_expansion_for_qbx_direct_eval(
+                base_kernel, target_kernels)
+
+
+class ProxyPointTarget(PointsTarget):
+    def __init__(self,
+            lpot_source: QBXLayerPotentialSource,
+            proxies: np.ndarray) -> None:
+        """
+        :arg lpot_source: the layer potential for which the proxy are constructed.
+            This argument is kept for symmetry with :class:`ProxyPointSource`.
+        :arg proxies: an array of shape ``(ambient_dim, nproxies)`` containing
+            the proxy points.
+        """
+        assert proxies.shape[0] == lpot_source.ambient_dim
+
+        super().__init__(proxies)
+        self.lpot_source = lpot_source
 
 
 @dataclass(frozen=True)
@@ -176,6 +203,8 @@ class ProxyClusterGeometryData:
 
     .. automethod:: __init__
     .. automethod:: to_numpy
+    .. automethod:: as_sources
+    .. automethod:: as_targets
     """
 
     places: GeometryCollection
@@ -188,17 +217,65 @@ class ProxyClusterGeometryData:
     centers: np.ndarray
     radii: np.ndarray
 
+    _cluster_radii: Optional[np.ndarray] = None
+
     @property
     def nclusters(self) -> int:
         return self.srcindex.nclusters
 
+    @property
+    def discr(self):
+        return self.places.get_discretization(
+                self.dofdesc.geometry,
+                self.dofdesc.discr_stage)
+
     def to_numpy(self, actx: PyOpenCLArrayContext) -> "ProxyClusterGeometryData":
         from arraycontext import to_numpy
+        if self._cluster_radii is not None:
+            cluster_radii = to_numpy(self._cluster_radii, actx)
+        else:
+            cluster_radii = None
+
         from dataclasses import replace
         return replace(self,
-                points=to_numpy(self.points, actx),
-                centers=to_numpy(self.centers, actx),
-                radii=to_numpy(self.radii, actx))
+                points=np.stack(to_numpy(self.points, actx)),
+                centers=np.stack(to_numpy(self.centers, actx)),
+                radii=to_numpy(self.radii, actx),
+                _cluster_radii=cluster_radii)
+
+    def as_sources(self) -> ProxyPointSource:
+        lpot_source = self.places.get_geometry(self.dofdesc.geometry)
+        return ProxyPointSource(lpot_source, self.points)
+
+    def as_targets(self) -> ProxyPointTarget:
+        lpot_source = self.places.get_geometry(self.dofdesc.geometry)
+        return ProxyPointTarget(lpot_source, self.points)
+
+# }}}
+
+
+# {{{ proxy point generator
+
+def _generate_unit_sphere(ambient_dim: int, approx_npoints: int) -> np.ndarray:
+    """Generate uniform points on a unit sphere.
+
+    :arg ambient_dim: dimension of the ambient space.
+    :arg approx_npoints: approximate number of points to generate. If the
+        ambient space is 3D, this will not generate the exact number of points.
+    :return: array of shape ``(ambient_dim, npoints)``, where ``npoints``
+        will not generally be the same as ``approx_npoints``.
+    """
+
+    if ambient_dim == 2:
+        t = np.linspace(0.0, 2.0 * np.pi, approx_npoints, endpoint=False)
+        points = np.vstack([np.cos(t), np.sin(t)])
+    elif ambient_dim == 3:
+        from pytools import sphere_sample_equidistant
+        points = sphere_sample_equidistant(approx_npoints, r=1)
+    else:
+        raise ValueError("ambient_dim > 3 not supported.")
+
+    return points
 
 
 def make_compute_cluster_centers_knl(
@@ -346,6 +423,8 @@ class ProxyGeneratorBase:
         discr = self.places.get_discretization(
                 source_dd.geometry, source_dd.discr_stage)
 
+        include_cluster_radii = kwargs.pop("include_cluster_radii", False)
+
         # {{{ get proxy centers and radii
 
         sources = flatten(discr.nodes(), actx, leaf_class=DOFArray)
@@ -364,6 +443,18 @@ class ProxyGeneratorBase:
                 radius_factor=self.radius_factor,
                 proxy_centers=centers_dev,
                 **kwargs)
+
+        if include_cluster_radii:
+            knl = make_compute_cluster_radii_knl(actx, self.ambient_dim)
+            _, (cluster_radii,) = knl(actx.queue,
+                    sources=sources,
+                    srcindices=dof_index.indices,
+                    srcstarts=dof_index.starts,
+                    radius_factor=1.0,
+                    proxy_centers=centers_dev)
+            cluster_radii = actx.freeze(cluster_radii)
+        else:
+            cluster_radii = None
 
         # }}}
 
@@ -398,6 +489,7 @@ class ProxyGeneratorBase:
                 points=actx.freeze(from_numpy(proxies, actx)),
                 centers=actx.freeze(centers_dev),
                 radii=actx.freeze(radii_dev),
+                _cluster_radii=cluster_radii
                 )
 
 
