@@ -325,14 +325,16 @@ def make_flat_cluster_diag(
 # {{{ interpolative decomposition
 
 def interp_decomp(
-        A: np.ndarray, rank: Optional[int], eps: Optional[float],
+        A: np.ndarray, *, rank: Optional[int], eps: Optional[float],
         ) -> Tuple[int, np.ndarray, np.ndarray]:
     """Wrapper for :func:`~scipy.linalg.interpolative.interp_decomp` that
     always has the same output signature.
 
-    :return: a tuple ``(k, idx, interp)`` containing the numerical rank,
-        the column indices and the resulting interpolation matrix.
+    :return: a tuple ``(k, idx, interp)`` containing the numerical rank *k*,
+        the column indices *idx* and the resulting interpolation matrix *interp*.
     """
+    if rank is not None and eps is not None:
+        raise ValueError("providing both 'rank' and 'eps' is not supported")
 
     import scipy.linalg.interpolative as sli    # pylint:disable=no-name-in-module
     if rank is None:
@@ -353,6 +355,31 @@ def cluster_skeletonization_error(
         mat: np.ndarray, skeleton: "SkeletonizationResult", *,
         ord: Optional[float] = None,
         relative: bool = False) -> np.ndarray:
+    r"""Evaluate the cluster-wise skeletonization errors for the given *skeleton*.
+
+    Errors are computed for all interactions between cluster :math:`i` and
+    cluster :math:`j` as
+
+    .. math::
+
+        E^T_{ij} = \|A_{ij} - L_i T_{ij}\|
+        \quad \text{and} \quad
+        E^S_{ij} = \|A_{ij} - S_{ij} R_j\|
+
+    where :math:`A_{ij}` is the exact interaction between the two clusters,
+    :math:`(L_i, R_j)` are the ID interpolation matrices and
+    :math:`(T_{ij}, S_{ij})` are the target and source skeleton matrices.
+    The exact matrix and the skeleton matrices are extracted from the full
+    matrix *mat*.
+
+    :arg ord: the type of the matrix norm used to compute errors, as described
+        in :func:`numpy.linalg.norm`. This norm is used in computing the
+        cluster-wise errors above.
+    :arg relative: if *True*, a relative norm of type *ord* is computed.
+    :returns: a :class:`tuple` of ``(src_errors, tgt_errors)``. Each error is
+        an object :class:`~numpy.ndarray` of shape ``(nclusters, nclusters)``
+        containing the errors between all non-self cluster interactions.
+    """
     from itertools import product
 
     L = skeleton.L
@@ -388,10 +415,10 @@ def cluster_skeletonization_error(
 
         # compute cluster-wise errors
         S = mat[np.ix_(s_tgt, f_src)]
-        tgt_error[i, j] = mnorm(A, L[i, i] @ S)
+        tgt_error[i, j] = mnorm(A, L[i] @ S)
 
         S = mat[np.ix_(f_tgt, s_src)]
-        src_error[i, j] = mnorm(A, S @ R[j, j])
+        src_error[i, j] = mnorm(A, S @ R[j])
 
     # }}}
 
@@ -402,6 +429,28 @@ def skeletonization_error(
         mat: np.ndarray, skeleton: "SkeletonizationResult", *,
         ord: Optional[float] = None,
         relative: bool = False) -> np.ndarray:
+    r"""Computes the skeletonization error for the entire matrix *mat*.
+
+    The error computed here is given by
+
+    .. math::
+
+        E = \|A - L S R\|,
+
+    where :math:`A` is simply *mat*, :math:`L` and :math:`R` are block
+    diagonal matrices reconstructed from the block in *skeleton* and
+    :math:`S` is the skeleton matrix (which is a subset of the rows and
+    columns of :math:`A`).
+
+    Reconstructing the full matrix can be very costly. In these cases,
+    :func:`cluster_skeletonization_error` may be more appropriate.
+
+    :arg ord: the type of the matrix norm used to compute errors, as described
+        in :func:`numpy.linalg.norm`. This norm is used in computing the
+        reconstruction error above.
+    :arg relative: if *True*, a relative norm of type *ord* is computed.
+    """
+
     L = skeleton.L
     R = skeleton.R
     tgt_src_index = skeleton.tgt_src_index
@@ -425,7 +474,7 @@ def skeletonization_error(
         s_src = skel_tgt_src_index.sources.cluster_indices(j)
 
         S = mat[np.ix_(s_tgt, s_src)]
-        skl[np.ix_(f_tgt, f_src)] = L[i, i] @ S @ R[j, j]
+        skl[np.ix_(f_tgt, f_src)] = L[i] @ S @ R[j]
 
     # }}}
 

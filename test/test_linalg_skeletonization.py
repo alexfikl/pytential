@@ -97,7 +97,11 @@ def _plot_skeleton_with_proxies(name, sources, pxy, srcindex, sklindex):
     replace(SKELETONIZE_TEST_CASES[0], op_type="double", knl_class_or_helmholtz_k=5),
     ])
 def test_skeletonize_symbolic(actx_factory, case, visualize=False):
-    """Tests that the symbolic manipulations work for different kernels / IntGs."""
+    """Tests that the symbolic manipulations work for different kernels / IntGs.
+    This tests that `prepare_expr` and `prepare_proxy_expr` can "clean" the
+    given integral equations and that the result can be evaluated and skeletonized.
+    """
+
     actx = actx_factory()
 
     if visualize:
@@ -152,7 +156,7 @@ def test_skeletonize_symbolic(actx_factory, case, visualize=False):
 
 def run_skeletonize_by_proxy(actx, case, resolution,
                              places=None, mat=None,
-                             force_assert=True,
+                             ctol=None, rtol=None,
                              suffix="", visualize=False):
     from pytools import ProcessTimer
 
@@ -223,51 +227,46 @@ def run_skeletonize_by_proxy(actx, case, resolution,
     from pytential.linalg.skeletonization import \
             _skeletonize_block_by_proxy_with_mats
     with ProcessTimer() as p:
-        L, R, skel_tgt_src_index, src, tgt = _skeletonize_block_by_proxy_with_mats(
+        skeleton = _skeletonize_block_by_proxy_with_mats(
                 actx, 0, 0, places, proxy_generator, wrangler, tgt_src_index,
                 id_eps=case.id_eps,
                 max_particles_in_box=case.max_particles_in_box)
 
     logger.info("[time] skeletonization by proxy: %s", p)
 
+    L, R = skeleton.L, skeleton.R
     for i in range(tgt_src_index.nclusters):
         # targets (rows)
         bi = np.searchsorted(
             tgt_src_index.targets.cluster_indices(i),
-            skel_tgt_src_index.targets.cluster_indices(i),
+            skeleton.skel_tgt_src_index.targets.cluster_indices(i),
             )
 
-        A = np.hstack(tgt[i])
+        A = np.hstack(skeleton._tgt_eval_result[i])
         S = A[bi, :]
-        tgt_error = la.norm(A - L[i, i] @ S, ord=2) / la.norm(A, ord=2)
+        tgt_error = la.norm(A - L[i] @ S, ord=2) / la.norm(A, ord=2)
 
         # sources (columns)
         bj = np.searchsorted(
             tgt_src_index.sources.cluster_indices(i),
-            skel_tgt_src_index.sources.cluster_indices(i),
+            skeleton.skel_tgt_src_index.sources.cluster_indices(i),
             )
 
-        A = np.vstack(src[i])
+        A = np.vstack(skeleton._src_eval_result[i])
         S = A[:, bj]
-        src_error = la.norm(A - S @ R[i, i], ord=2) / la.norm(A, ord=2)
+        src_error = la.norm(A - S @ R[i], ord=2) / la.norm(A, ord=2)
 
         logger.info("[%04d] id_eps %.5e src %.5e tgt %.5e rank %d/%d",
                 i, case.id_eps,
-                src_error, tgt_error, R[i, i].shape[0], R[i, i].shape[1])
+                src_error, tgt_error, R[i].shape[0], R[i].shape[1])
 
-        if force_assert:
-            assert src_error < 6 * case.id_eps
-            assert tgt_error < 6 * case.id_eps
+        if ctol is not None:
+            assert src_error < ctol * case.id_eps
+            assert tgt_error < ctol * case.id_eps
 
     # }}}
 
     # {{{ check skeletonize
-
-    from pytential.linalg import SkeletonizationResult
-    skeleton = SkeletonizationResult(
-            L=L, R=R,
-            tgt_src_index=tgt_src_index,
-            skel_tgt_src_index=skel_tgt_src_index)
 
     from pytential.linalg.utils import (
             cluster_skeletonization_error, skeletonization_error)
@@ -289,16 +288,14 @@ def run_skeletonize_by_proxy(actx, case, resolution,
 
         logger.info("[time] full error: %s", p)
 
-    # FIXME: why is the 3D error so large?
-    rtol = 10**places.ambient_dim * case.id_eps
-
     logger.info("error: id_eps %.5e R %.5e L %.5e F %.5e (rtol %.5e)",
-            case.id_eps, err_r, err_l, err_f, rtol)
+            case.id_eps, err_r, err_l, err_f,
+            rtol if rtol is not None else 0.0)
 
-    if force_assert:
-        assert err_l < rtol
-        assert err_r < rtol
-        assert err_f < rtol
+    if rtol:
+        assert err_l < rtol * case.id_eps
+        assert err_r < rtol * case.id_eps
+        assert err_f < rtol * case.id_eps
 
     # }}}
 
@@ -327,9 +324,9 @@ def run_skeletonize_by_proxy(actx, case, resolution,
                     ).reshape(places.ambient_dim, -1)
 
             _plot_skeleton_with_proxies(f"sources{suffix}", sources, pxy,
-                    tgt_src_index.sources, skel_tgt_src_index.sources)
+                    tgt_src_index.sources, skeleton.skel_tgt_src_index.sources)
             _plot_skeleton_with_proxies(f"targets{suffix}", sources, pxy,
-                    tgt_src_index.targets, skel_tgt_src_index.targets)
+                    tgt_src_index.targets, skeleton.skel_tgt_src_index.targets)
         else:
             # TODO: would be nice to figure out a way to visualize some of these
             # skeletonization results in 3D. Probably need to teach the
@@ -341,9 +338,18 @@ def run_skeletonize_by_proxy(actx, case, resolution,
     return err_f, (places, mat)
 
 
-@pytest.mark.parametrize("case", SKELETONIZE_TEST_CASES)
+@pytest.mark.parametrize("case", [
+    # NOTE: skip 2d tests, since they're better checked for convergence in
+    # `test_skeletonize_by_proxy_convergence`
+    # SKELETONIZE_TEST_CASES[0], SKELETONIZE_TEST_CASES[1],
+    SKELETONIZE_TEST_CASES[2],
+    ])
 def test_skeletonize_by_proxy(actx_factory, case, visualize=False):
-    """Test single-level level skeletonization accuracy."""
+    r"""Test single-level skeletonization accuracy. Checks that the error
+    satisfies :math:`e < c \epsilon_{id}` for a fixed ID tolerance and an
+    empirically determined (not too huge) :math:`c`.
+    """
+
     import scipy.linalg.interpolative as sli    # pylint:disable=no-name-in-module
     sli.seed(42)
 
@@ -355,7 +361,12 @@ def test_skeletonize_by_proxy(actx_factory, case, visualize=False):
     case = replace(case, approx_cluster_count=6, id_eps=1.0e-8)
     logger.info("\n%s", case)
 
-    run_skeletonize_by_proxy(actx, case, case.resolutions[0], visualize=visualize)
+    run_skeletonize_by_proxy(
+        actx, case, case.resolutions[0],
+        ctol=6,
+        # FIXME: why is the 3D error so large?
+        rtol=10**case.ambient_dim,
+        visualize=visualize)
 
 # }}}
 
@@ -382,7 +393,10 @@ CONVERGENCE_TEST_CASES = [
 def test_skeletonize_by_proxy_convergence(
         actx_factory, case, weighted=True,
         visualize=False):
-    """Test single-level level skeletonization accuracy."""
+    r"""Test single-level skeletonization accuracy. Checks that the
+    accuracy of the skeletonization scales linearly with :math:`\epsilon_{id}`
+    (the ID tolerance).
+    """
     import scipy.linalg.interpolative as sli    # pylint:disable=no-name-in-module
     sli.seed(42)
 
@@ -416,15 +430,14 @@ def test_skeletonize_by_proxy_convergence(
     places = mat = None
     for i in range(id_eps.size):
         case = replace(case, id_eps=id_eps[i], weighted_proxy=weighted)
-
-        if not was_zero:
-            rec_error[i], (places, mat) = run_skeletonize_by_proxy(
-                actx, case, r, places=places, mat=mat,
-                force_assert=False,
-                suffix=f"{suffix}_{i:04d}", visualize=False)
+        rec_error[i], (places, mat) = run_skeletonize_by_proxy(
+            actx, case, r, places=places, mat=mat,
+            suffix=f"{suffix}_{i:04d}", visualize=False)
 
         was_zero = rec_error[i] == 0.0
         eoc.add_data_point(id_eps[i], rec_error[i])
+        if was_zero:
+            break
 
     logger.info("\n%s", eoc.pretty_print())
 
