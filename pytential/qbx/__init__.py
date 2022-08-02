@@ -638,12 +638,18 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                 target_kernels=insn.target_kernels,
                 source_kernels=insn.source_kernels)
 
+        from pytential.qbx.fmm import translation_classes_builder
+        traversal = geo_data.traversal()
+        translation_classes_data, _ = translation_classes_builder(actx)(
+            actx.queue, traversal, traversal.tree, is_translation_per_level=True)
+
         wrangler = tree_indep.wrangler_cls(
                         tree_indep, geo_data, output_and_expansion_dtype,
                         self.qbx_order,
                         self.fmm_level_to_order,
                         source_extra_kwargs=source_extra_kwargs,
                         kernel_extra_kwargs=kernel_extra_kwargs,
+                        translation_classes_data=translation_classes_data,
                         _use_target_specific_qbx=self._use_target_specific_qbx)
 
         from pytential.qbx.geometry import target_state

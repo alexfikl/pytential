@@ -376,6 +376,17 @@ non_qbx_box_target_lists`),
 
     # }}}
 
+
+def translation_classes_builder(actx):
+    from pytools import memoize_in
+
+    @memoize_in(actx, (QBXExpansionWrangler, translation_classes_builder))
+    def make_container():
+        from boxtree.translation_classes import TranslationClassesBuilder
+        return TranslationClassesBuilder(actx.context)
+
+    return make_container()
+
 # }}}
 
 
