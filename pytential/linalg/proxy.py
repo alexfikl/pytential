@@ -354,7 +354,7 @@ class ProxyGeneratorBase:
         discr = self.places.get_discretization(
                 source_dd.geometry, source_dd.discr_stage)
 
-        include_cluster_radii = kwargs.pop("include_cluster_radii", False)
+        include_cluster_radii = kwargs.pop("include_cluster_radii", True)
 
         # {{{ get proxy centers and radii
 
