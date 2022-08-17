@@ -20,7 +20,6 @@ Contents
     discretization
     symbolic
     linalg
-    tools
     misc
     qbx
     merge
