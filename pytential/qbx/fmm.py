@@ -116,6 +116,15 @@ non_qbx_box_target_lists`),
         if _use_target_specific_qbx:
             raise ValueError("TSQBX is not implemented in sumpy")
 
+        base_kernel = tree_indep.get_base_kernel()
+        if translation_classes_data is None and base_kernel.is_translation_invariant:
+            from pytential.qbx.fmm import translation_classes_builder
+            traversal = geo_data.traversal()
+            actx = geo_data._setup_actx
+
+            translation_classes_data, _ = translation_classes_builder(actx)(
+                actx.queue, traversal, traversal.tree, is_translation_per_level=True)
+
         super().__init__(
                 tree_indep, geo_data.traversal(),
                 dtype, fmm_level_to_order, source_extra_kwargs, kernel_extra_kwargs,
