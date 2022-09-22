@@ -446,9 +446,11 @@ def make_skeletonization_wrangler(
 
     exprs = prepare_expr(places, exprs, auto_where)
     source_proxy_exprs = prepare_proxy_expr(
-            places, exprs, (auto_where[0], PROXY_SKELETONIZATION_TARGET))
+            places, exprs, (auto_where[0], PROXY_SKELETONIZATION_TARGET),
+            remove_transforms=False)
     target_proxy_exprs = prepare_proxy_expr(
-            places, exprs, (PROXY_SKELETONIZATION_SOURCE, auto_where[1]))
+            places, exprs, (PROXY_SKELETONIZATION_SOURCE, auto_where[1]),
+            remove_transforms=True)
 
     # }}}
 
