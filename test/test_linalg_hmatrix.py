@@ -407,7 +407,8 @@ def test_hmatrix_forward_matvec(
     sym.QBX_SOURCE_STAGE1,
     # sym.QBX_SOURCE_STAGE2
     ])
-def test_hmatrix_backward_matvec(actx_factory, case, discr_stage, visualize=False):
+def test_hmatrix_backward_matvec(
+        actx_factory, case, discr_stage, id_eps_ref=None, visualize=False):
     actx = actx_factory()
 
     if visualize:
@@ -457,7 +458,7 @@ def test_hmatrix_backward_matvec(actx_factory, case, discr_stage, visualize=Fals
             )(prepare_expr(places, sym_op, (dd, dd)))
 
         import pytential.linalg.utils as hla
-        eigs_ref = hla.eigs(mat, k=5)
+        eigs_ref = hla.eigs(mat, k=2 * mat.shape[0] // 3)
         kappa_ref = np.linalg.cond(mat, p=2)
 
     # }}}
@@ -470,7 +471,10 @@ def test_hmatrix_backward_matvec(actx_factory, case, discr_stage, visualize=Fals
     x_ref = actx.thaw(density_discr.nodes()[0])
     b_ref = bind(places, sym_op, auto_where=dd)(actx, u=x_ref)
 
-    id_eps = 10.0 ** (-np.arange(2, 16))
+    if id_eps_ref is None:
+        id_eps = 10.0 ** (-np.arange(2, 16))
+    else:
+        id_eps = np.array([id_eps_ref])
     rec_error = np.zeros_like(id_eps)
 
     if visualize:
@@ -496,8 +500,7 @@ def test_hmatrix_backward_matvec(actx_factory, case, discr_stage, visualize=Fals
 
         if visualize:
             hmat = wrangler.get_forward()
-            rec_eigs[i, :] = hla.eigs(hmat, k=5, tol=1.0e-6)
-            rec_kappa[i] = hla.cond(hmat, p=2, tol=1.0e-6)
+            rec_eigs[i, :] = hla.eigs(hmat, k=eigs_ref.size, tol=1.0e-6)
 
             logger.info("eigs: %s %s", eigs_ref, rec_eigs[i])
             logger.info("kappa %.12e %.12e", kappa_ref, rec_kappa[i])
@@ -544,15 +547,21 @@ def test_hmatrix_backward_matvec(actx_factory, case, discr_stage, visualize=Fals
     # {{{ eigs
 
     ax = fig.gca()
-    ax.plot(np.real(eigs_ref), np.imag(eigs_ref), "ko")
+    ax.plot(np.real(eigs_ref), np.imag(eigs_ref), "ko", ms=12)
     for i in range(id_eps.size):
-        ax.plot(np.real(rec_eigs[i]), np.imag(rec_eigs[i]), "v")
+        ax.plot(np.real(rec_eigs[i]), np.imag(rec_eigs[i]), "o", ms=7)
 
     ax.grid(True)
-    ax.set_xlabel(r"$\Re \lambda$")
-    ax.set_ylabel(r"$\Im \lambda$")
+    ax.set_xlabel(r"$\Re \{\lambda\}$")
+    ax.set_ylabel(r"$\Im \{\lambda\}$")
+    ax.set_ylim([-1.0e-5, 1.0e-5])
+    ax.set_yscale("symlog")
 
-    fig.savefig(f"linalg_hmatrix_inverse_{case.name}_{case.op_type}_eigs")
+    if id_eps_ref is None:
+        fig.savefig(f"linalg_hmatrix_inverse_{case.name}_{case.op_type}_eigs")
+    else:
+        d = -int(np.log10(id_eps_ref))
+        fig.savefig(f"hmatrix_{case.name}_{case.op_type}_eigs_{d:02d}")
     fig.clf()
 
     # }}}
@@ -570,6 +579,16 @@ def test_hmatrix_backward_matvec(actx_factory, case, discr_stage, visualize=Fals
         fig.clf()
 
     pt.close(fig)
+
+
+def run_eigs(actx_factory, case):
+    for n in range(2, 16):
+        test_hmatrix_backward_matvec(
+            actx_factory,
+            case,
+            sym.QBX_SOURCE_STAGE1,
+            id_eps_ref=10.0 ** -n,
+            visualize=True)
 
 # }}}
 
