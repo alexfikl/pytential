@@ -113,6 +113,9 @@ setup(
     packages=find_packages(),
     ext_modules=cythonize(ext_modules),
     python_requires=">=3.8",
+    setup_requires=[
+        "cython",
+    ],
     install_requires=[
         "pytools>=2018.2",
         "modepy>=2021.1",
