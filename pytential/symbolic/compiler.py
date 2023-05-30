@@ -22,38 +22,38 @@ THE SOFTWARE.
 
 from dataclasses import dataclass
 from functools import reduce
-from typing import Any, Callable, Dict, Hashable, List, Optional, Set
+from typing import (
+        AbstractSet, Any, Collection, Tuple, Dict, FrozenSet, Hashable, List,
+        Optional, Sequence, Set)
 
 import numpy as np
 
 from pymbolic.primitives import cse_scope, Expression, Variable
-from pytools import memoize_method
 from sumpy.kernel import Kernel
 
-from pytential.symbolic.primitives import DOFDescriptor, IntG
-from pytential.symbolic.mappers import IdentityMapper, DependencyMapper
+from pytential.symbolic.primitives import (
+        DOFDescriptor, IntG, NamedIntermediateResult)
+from pytential.symbolic.mappers import CachedIdentityMapper, DependencyMapper
 
 
-# {{{ instructions
+# {{{ statements
 
 @dataclass(frozen=True, eq=False)
-class Instruction:
+class Statement:
     """
     .. attribute:: names
     .. attribute:: exprs
     .. attribute:: priority
-    .. attribute:: dep_mapper_factory
     """
     names: List[str]
     exprs: List[Expression]
-    dep_mapper_factory: Callable[[], DependencyMapper]
     priority: int
 
     def get_assignees(self) -> Set[str]:
         raise NotImplementedError(
                 f"get_assignees for '{self.__class__.__name__}'")
 
-    def get_dependencies(self) -> Set[Expression]:
+    def get_dependencies(self, dep_mapper: DependencyMapper) -> Set[Expression]:
         raise NotImplementedError(
                 f"get_dependencies for '{self.__class__.__name__}'")
 
@@ -62,12 +62,12 @@ class Instruction:
 
 
 @dataclass(frozen=True, eq=False)
-class Assign(Instruction):
+class Assign(Statement):
     """
     .. attribute:: do_not_return
 
         A list of bools indicating whether the corresponding entry in
-        :attr:`Instructio.names` and :attr:`Instruction.exprs` describes an
+        :attr:`Statement.names` and :attr:`Statement.exprs` describes an
         expression that is not needed beyond this assignment.
     """
 
@@ -81,18 +81,14 @@ class Assign(Instruction):
     def get_assignees(self):
         return set(self.names)
 
-    @memoize_method
-    def get_dependencies(self):
-        # arg is include_subscripts
-        dep_mapper = self.dep_mapper_factory()
-
+    def get_dependencies(self, dep_mapper: DependencyMapper) -> Set[Expression]:
         from operator import or_
         deps = reduce(or_, (dep_mapper(expr) for expr in self.exprs))
 
-        from pymbolic.primitives import Variable
-        deps -= {Variable(name) for name in self.names}
-
-        return deps
+        return {
+                dep
+                for dep in deps
+                if dep.name not in self.names}
 
     def __str__(self):
         comment = self.comment
@@ -125,7 +121,7 @@ class Assign(Instruction):
 # }}}
 
 
-# {{{ layer pot instruction
+# {{{ layer pot statement
 
 @dataclass(frozen=True)
 class PotentialOutput:
@@ -152,12 +148,12 @@ class PotentialOutput:
 
 
 @dataclass(frozen=True, eq=False)
-class ComputePotentialInstruction(Instruction):
+class ComputePotential(Statement):
     """
     .. attribute:: outputs
 
         A list of :class:`PotentialOutput` instances
-        The entries in the list correspond to :attr:`Instruction.names`.
+        The entries in the list correspond to :attr:`Statement.names`.
 
     .. attribute:: target_kernels
 
@@ -193,9 +189,7 @@ class ComputePotentialInstruction(Instruction):
     def get_assignees(self):
         return {o.name for o in self.outputs}
 
-    def get_dependencies(self):
-        dep_mapper = self.dep_mapper_factory()
-
+    def get_dependencies(self, dep_mapper: DependencyMapper) -> Set[Expression]:
         result = dep_mapper(self.densities[0])
         for density in self.densities[1:]:
             result.update(dep_mapper(density))
@@ -266,7 +260,9 @@ class ComputePotentialInstruction(Instruction):
 
 # {{{ graphviz/dot dataflow graph drawing
 
-def dot_dataflow_graph(code: "Code",
+def dot_dataflow_graph(
+        dep_mapper: DependencyMapper,
+        code: "Code",
         max_node_label_length: int = 30,
         label_wrap_width: int = 50) -> str:
     origins = {}
@@ -276,7 +272,7 @@ def dot_dataflow_graph(code: "Code",
             'initial [label="initial"]'
             'result [label="result"]']
 
-    for num, insn in enumerate(code.instructions):
+    for num, insn in enumerate(code.statements):
         node_name = f"node{num}"
         node_names[insn] = node_name
         node_label = str(insn)
@@ -308,8 +304,8 @@ def dot_dataflow_graph(code: "Code",
         orig_node = get_orig_node(expr)
         result.append(f'{orig_node} -> {target_node} [label="{expr}"];')
 
-    for insn in code.instructions:
-        for dep in insn.get_dependencies():
+    for insn in code.statements:
+        for dep in insn.get_dependencies(dep_mapper):
             gen_expr_arrow(dep, node_names[insn])
 
     code_res = code.result
@@ -328,156 +324,154 @@ def dot_dataflow_graph(code: "Code",
 # {{{ code representation
 
 class Code:
-    def __init__(self, instructions: List[Instruction], result: Variable) -> None:
-        self.instructions = instructions
+    def __init__(
+            self,
+            inputs: AbstractSet[str],
+            schedule: Sequence[Tuple[Statement, Collection[str]]],
+            result: np.ndarray,
+           ) -> None:
+        self.inputs = inputs
+        self._schedule = schedule
         self.result = result
-        self.last_schedule = None
 
-    def dump_dataflow_graph(self):
-        from pytools.debug import open_unique_debug_file
-
-        open_unique_debug_file("dataflow", ".dot")[0]\
-                .write(dot_dataflow_graph(self, max_node_label_length=None))
+    @property
+    def statements(self) -> Sequence[Statement]:
+        return [stmt for stmt, _discardable_vars in self._schedule]
 
     def __str__(self):
         lines = []
-        for insn in self.instructions:
+        for insn in self.statements:
             lines.extend(str(insn).split("\n"))
         lines.append("RESULT: " + str(self.result))
 
         return "\n".join(lines)
 
-    # {{{ dynamic scheduler
+# }}}
 
-    class NoInstructionAvailable(Exception):
-        pass
 
-    @memoize_method
-    def get_next_step(self, available_names, done_insns):
-        from pytools import argmax2
-        available_insns = [
-                (insn, insn.priority) for insn in self.instructions
-                if insn not in done_insns
-                and all(dep.name in available_names
-                    for dep in insn.get_dependencies())]
+# {{{ scheduler
 
-        if not available_insns:
-            raise self.NoInstructionAvailable
+class _NoStatementAvailable(Exception):
+    pass
 
-        needed_vars = {
-            dep.name
-            for insn in self.instructions
-            if insn not in done_insns
-            for dep in insn.get_dependencies()
-            }
-        discardable_vars = set(available_names) - needed_vars
 
-        # {{{ make sure results do not get discarded
-        from pytools.obj_array import obj_array_vectorize
+def _get_next_step(
+        dep_mapper: DependencyMapper,
+        statements: Sequence[Statement],
+        result: np.ndarray,
+        available_names: AbstractSet[str],
+        done_stmts: AbstractSet[Statement]
+        ) -> Tuple[Statement, AbstractSet[str]]:
 
-        from pytential.symbolic.mappers import DependencyMapper
-        dm = DependencyMapper(composite_leaves=False)
+    from pytools import argmax2
+    available_stmts = [
+            (insn, insn.priority) for insn in statements
+            if insn not in done_stmts
+            and (
+                {dep.name for dep in insn.get_dependencies(dep_mapper)}
+                <= available_names)]
 
-        def remove_result_variable(result_expr):
-            # The extra dependency mapper run is necessary
-            # because, for instance, subscripts can make it
-            # into the result expression, which then does
-            # not consist of just variables.
+    if not available_stmts:
+        raise _NoStatementAvailable
 
-            for var in dm(result_expr):
-                assert isinstance(var, Variable)
-                discardable_vars.discard(var.name)
+    needed_vars = {
+        dep.name
+        for insn in statements
+        if insn not in done_stmts
+        for dep in insn.get_dependencies(dep_mapper)
+        }
+    discardable_vars = set(available_names) - needed_vars
 
-        obj_array_vectorize(remove_result_variable, self.result)
-        # }}}
+    # {{{ make sure results do not get discarded
 
-        return argmax2(available_insns), discardable_vars
+    from pytools.obj_array import obj_array_vectorize
 
-    @staticmethod
-    def get_exec_function(insn, exec_mapper):
-        if isinstance(insn, Assign):
-            return exec_mapper.exec_assign
-        if isinstance(insn, ComputePotentialInstruction):
-            return exec_mapper.exec_compute_potential_insn
-        raise ValueError(f"unknown instruction class: {type(insn)}")
+    from pytential.symbolic.mappers import DependencyMapper
+    dm = DependencyMapper(composite_leaves=False)
 
-    def execute(self, exec_mapper, pre_assign_check=None):
-        """Execute the instruction stream, make all scheduling decisions
-        dynamically.
-        """
+    def remove_result_variable(result_expr):
+        # The extra dependency mapper run is necessary
+        # because, for instance, subscripts can make it
+        # into the result expression, which then does
+        # not consist of just variables.
 
-        context = exec_mapper.context
+        for var in dm(result_expr):
+            assert isinstance(var, Variable)
+            discardable_vars.discard(var.name)
 
-        done_insns = set()
-
-        while True:
-            discardable_vars = []
-            insn = None
-
-            try:
-                insn, discardable_vars = self.get_next_step(
-                        frozenset(context.keys()),
-                        frozenset(done_insns))
-
-            except self.NoInstructionAvailable:
-                # no available instructions: we're done
-                break
-            else:
-                for name in discardable_vars:
-                    del context[name]
-
-                done_insns.add(insn)
-                assignments = (
-                        self.get_exec_function(insn, exec_mapper)(
-                            exec_mapper.array_context,
-                            insn, exec_mapper.bound_expr, exec_mapper))
-
-                assignees = insn.get_assignees()
-                for target, value in assignments:
-                    if pre_assign_check is not None:
-                        pre_assign_check(target, value)
-
-                    assert target in assignees
-                    context[target] = value
-
-        if len(done_insns) < len(self.instructions):
-            print("Unreachable instructions:")
-            for insn in set(self.instructions) - done_insns:
-                print("    ", str(insn).replace("\n", "\n     "))
-                from pymbolic import var
-                print("     missing: ", ", ".join(
-                        str(s) for s in
-                        set(insn.get_dependencies())
-                        - {var(v) for v in context.keys()}))
-
-            raise RuntimeError("not all instructions are reachable"
-                    "--did you forget to pass a value for a placeholder?")
-
-        from pytools.obj_array import obj_array_vectorize
-        return obj_array_vectorize(exec_mapper, self.result)
+    obj_array_vectorize(remove_result_variable, result)
 
     # }}}
+
+    return argmax2(available_stmts), discardable_vars
+
+
+def _compute_schedule(
+        dep_mapper: DependencyMapper,
+        statements: Sequence[Statement],
+        result: np.ndarray,
+        ) -> Tuple[AbstractSet[str], Sequence[Tuple[Statement, FrozenSet[str]]]]:
+    # FIXME: I'm O(n**2). I want to be replaced with a normal topological sort.
+
+    schedule = []
+
+    done_stmts = set()
+
+    inputs = {dep.name
+              for stmt in set(statements)
+              for dep in stmt.get_dependencies(dep_mapper)
+              if not isinstance(dep, NamedIntermediateResult)
+              }
+
+    available_vars = inputs.copy()
+
+    while True:
+        try:
+            stmt, discardable_vars = _get_next_step(
+                    dep_mapper,
+                    statements,
+                    result,
+                    available_vars,
+                    frozenset(done_stmts))
+        except _NoStatementAvailable:
+            # no available statements: we're done
+            break
+
+        for name in discardable_vars:
+            available_vars.remove(name)
+
+        done_stmts.add(stmt)
+        available_vars |= stmt.get_assignees()
+
+        schedule.append((stmt, discardable_vars))
+
+    return inputs, schedule
 
 # }}}
 
 
 # {{{ compiler
 
-class OperatorCompiler(IdentityMapper):
-    def __init__(self,
+class OperatorCompiler(CachedIdentityMapper):
+    def __init__(
+            self,
             places,
             prefix: str = "_expr",
-            max_vectors_in_batch_expr: Optional[int] = None) -> None:
+            ) -> None:
         super().__init__()
 
         self.places = places
         self.prefix = prefix
-        self.max_vectors_in_batch_expr = max_vectors_in_batch_expr
 
-        self.code: List[Instruction] = []
+        self.code: List[Statement] = []
         self.expr_to_var: Dict[Expression, Variable] = {}
         self.assigned_names: Set[str] = set()
         self.group_to_operators: Dict[Hashable, Set[IntG]] = {}
+        self.dep_mapper = DependencyMapper(
+                # include_operator_bindings=False,
+                include_lookups=False,
+                include_subscripts=False,
+                include_calls="descend_args")
 
     def op_group_features(self, expr) -> Hashable:
         from pytential.symbolic.primitives import hashable_kernel_args
@@ -485,18 +479,6 @@ class OperatorCompiler(IdentityMapper):
         return (
                 lpot_source.op_group_features(expr)
                 + hashable_kernel_args(expr.kernel_arguments))
-
-    @memoize_method
-    def dep_mapper_factory(self, include_subscripts: bool = False):
-        return DependencyMapper(
-                # include_operator_bindings=False,
-                include_lookups=False,
-                include_subscripts=include_subscripts,
-                include_calls="descend_args")
-
-    @property
-    def dep_mapper(self):
-        return self.dep_mapper_factory()
 
     # {{{ top-level driver
 
@@ -520,12 +502,8 @@ class OperatorCompiler(IdentityMapper):
 
         result = super().__call__(expr)
 
-        # Put the toplevel expressions into variables as well.
-
-        from pytools.obj_array import obj_array_vectorize
-        result = obj_array_vectorize(self.assign_to_new_var, result)
-
-        return Code(self.code, result)
+        inputs, schedule = _compute_schedule(self.dep_mapper, self.code, result)
+        return Code(inputs, schedule, result)
 
     # }}}
 
@@ -563,7 +541,6 @@ class OperatorCompiler(IdentityMapper):
             ) -> Assign:
         return Assign(
                 names=[name], exprs=[expr],
-                dep_mapper_factory=self.dep_mapper_factory,
                 priority=priority)
 
     def assign_to_new_var(
@@ -580,11 +557,28 @@ class OperatorCompiler(IdentityMapper):
         new_name = self.get_var_name(prefix)
         self.code.append(self.make_assign(new_name, expr, priority))
 
-        return Variable(new_name)
+        return NamedIntermediateResult(new_name)
 
     # }}}
 
     # {{{ map_xxx routines
+
+    def map_sum(self, expr):
+        # create temporaries so that the scheduler can optimize
+        # the life-time of the dependencies
+        result = self.assign_to_new_var(self.rec(expr.children[0]))
+        for child in expr.children[1:]:
+            result = type(expr)((result, self.rec(child)))
+            result = self.assign_to_new_var(result)
+        return result
+
+    def map_numpy_array(self, expr):
+        # create temporaries so that the scheduler can optimize
+        # the life-time of the dependencies
+        result = np.empty(expr.shape, dtype=object)
+        for i in np.ndindex(expr.shape):
+            result[i] = self.assign_to_new_var(self.rec(expr[i]))
+        return result
 
     def map_common_subexpression(self, expr):
         # NOTE: EXPRESSION and DISCRETIZATION scopes are handled in
@@ -604,8 +598,7 @@ class OperatorCompiler(IdentityMapper):
                 # treat them specially. They get assigned to their
                 # own variable by default, which would mean the
                 # CSE prefix would be omitted.
-
-                rec_child = self.rec(expr.child, name_hint=expr.prefix)
+                rec_child = self.map_int_g(expr.child, name_hint=expr.prefix)
             else:
                 rec_child = self.rec(expr.child)
 
@@ -654,7 +647,7 @@ class OperatorCompiler(IdentityMapper):
                 ]
 
             self.code.append(
-                    ComputePotentialInstruction(
+                    ComputePotential(
                         # NOTE: these are set to None because they are deduced
                         # from `outputs` in `get_assignees` and `get_dependencies`
                         names=None,
@@ -666,11 +659,10 @@ class OperatorCompiler(IdentityMapper):
                         densities=density_vars,
                         source=expr.source,
                         priority=max(getattr(op, "priority", 0) for op in group),
-                        dep_mapper_factory=self.dep_mapper_factory))
+                        ))
 
-            from pymbolic.primitives import Variable
             for name, group_expr in zip(names, group):
-                self.expr_to_var[group_expr] = Variable(name)
+                self.expr_to_var[group_expr] = NamedIntermediateResult(name)
 
             return self.expr_to_var[expr]
 

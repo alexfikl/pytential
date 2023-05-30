@@ -306,8 +306,8 @@ def test_pec_mfie_extinction(actx_factory, case,
                 InterpolatoryQuadratureSimplexGroupFactory(case.target_order))
 
         places.update({
-            sym.DEFAULT_SOURCE: qbx,
-            sym.DEFAULT_TARGET: qbx.density_discr,
+            "source": qbx,
+            "target": qbx.density_discr,
             "test_source": test_source,
             "scat_discr": scat_discr,
             "obs_discr": obs_discr,
@@ -328,7 +328,7 @@ def test_pec_mfie_extinction(actx_factory, case,
                 })
 
         from pytential import GeometryCollection
-        places = GeometryCollection(places)
+        places = GeometryCollection(places, auto_where=("source", "target"))
         density_discr = places.get_discretization(places.auto_source.geometry)
 
         # {{{ system solve
@@ -356,11 +356,12 @@ def test_pec_mfie_extinction(actx_factory, case,
         j_rhs = bind(places, mfie.j_rhs(inc_xyz_sym.h))(
                 actx, inc_fld=inc_field_scat.field, **knl_kwargs)
 
-        gmres_settings = dict(
-                tol=case.gmres_tol,
-                progress=True,
-                hard_failure=True,
-                stall_iterations=50, no_progress_factor=1.05)
+        gmres_settings = {
+                "tol": case.gmres_tol,
+                "progress": True,
+                "hard_failure": True,
+                "stall_iterations": 50,
+                "no_progress_factor": 1.05}
         from pytential.linalg.gmres import gmres
         gmres_result = gmres(
                 bound_j_op.scipy_op(actx, "jt", np.complex128, **knl_kwargs),
@@ -388,7 +389,7 @@ def test_pec_mfie_extinction(actx_factory, case,
 
         def eval_repr_at(tgt, source=None, target=None):
             if source is None:
-                source = sym.DEFAULT_SOURCE
+                source = "source"
 
             return bind(
                 places, sym_repr, auto_where=(source, target)       # noqa: B023
@@ -405,8 +406,7 @@ def test_pec_mfie_extinction(actx_factory, case,
                     calc_patch, pde_test_repr.e, pde_test_repr.h, case.k)]
         print("Maxwell residuals:", maxwell_residuals)
 
-        eoc_rec_repr_maxwell.add_data_point(
-                actx.to_numpy(h_max), max(maxwell_residuals))
+        eoc_rec_repr_maxwell.add_data_point(h_max, max(maxwell_residuals))
 
         # }}}
 

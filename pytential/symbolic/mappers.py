@@ -27,6 +27,7 @@ from pymbolic.mapper.stringifier import (
         PREC_NONE, PREC_PRODUCT)
 from pymbolic.mapper import (
         Mapper,
+        CachedMapper,
         CSECachingMapperMixin
         )
 from pymbolic.mapper.dependency import (
@@ -138,6 +139,18 @@ class IdentityMapper(IdentityMapperBase):
             return expr
 
         return type(expr)(expr.from_dd, expr.to_dd, operand)
+
+
+class CachedIdentityMapper(CachedMapper, IdentityMapper):
+    def __call__(self, expr):
+        try:
+            return CachedMapper.__call__(self, expr)
+        except TypeError:
+            # Fallback to no cached behaviour for unhashable types
+            # like list, numpy.array
+            return IdentityMapper.__call__(self, expr)
+
+    rec = __call__
 
 # }}}
 
@@ -272,7 +285,7 @@ class EvaluationMapper(EvaluationMapperBase):
 class LocationTagger(CSECachingMapperMixin, IdentityMapper):
     """Used internally by :class:`ToTargetTagger`."""
 
-    def __init__(self, default_target, default_source=prim.DEFAULT_SOURCE):
+    def __init__(self, default_target, default_source):
         self.default_source = default_source
         self.default_target = default_target
 
@@ -290,6 +303,10 @@ class LocationTagger(CSECachingMapperMixin, IdentityMapper):
                 dofdesc = dofdesc.copy(geometry=self.default_target)
             else:
                 dofdesc = dofdesc.copy(geometry=self.default_source)
+        elif dofdesc.geometry is prim.DEFAULT_SOURCE:
+            dofdesc = dofdesc.copy(geometry=self.default_source)
+        elif dofdesc.geometry is prim.DEFAULT_TARGET:
+            dofdesc = dofdesc.copy(geometry=self.default_target)
 
         return dofdesc
 
@@ -449,6 +466,29 @@ class DiscretizationStageTagger(IdentityMapper):
 
 # {{{ DerivativeBinder
 
+class _IsSptiallyVaryingMapper(CombineMapper):
+    def combine(self, values):
+        import operator
+        from functools import reduce
+        return reduce(operator.or_, values, False)
+
+    def map_constant(self, expr):
+        return False
+
+    def map_spatial_constant(self, expr):
+        return False
+
+    def map_variable(self, expr):
+        return True
+
+    def map_int_g(self, expr):
+        return True
+
+
+class _DerivativeTakerUnsupoortedProductError(Exception):
+    pass
+
+
 class DerivativeTaker(Mapper):
     def __init__(self, ambient_axis):
         self.ambient_axis = ambient_axis
@@ -462,17 +502,17 @@ class DerivativeTaker(Mapper):
         return flattened_sum(children)
 
     def map_product(self, expr):
-        from pymbolic.primitives import is_constant
         const = []
         nonconst = []
         for subexpr in expr.children:
-            if is_constant(subexpr):
-                const.append(subexpr)
-            else:
+            if _IsSptiallyVaryingMapper()(subexpr):
                 nonconst.append(subexpr)
+            else:
+                const.append(subexpr)
 
         if len(nonconst) > 1:
-            raise RuntimeError("DerivativeTaker doesn't support products with "
+            raise _DerivativeTakerUnsupoortedProductError(
+                    "DerivativeTaker doesn't support products with "
                     "more than one non-constant")
 
         if not nonconst:

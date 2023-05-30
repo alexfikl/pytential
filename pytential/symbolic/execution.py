@@ -34,8 +34,10 @@ from meshmode.dof_array import DOFArray
 
 from pytools import memoize_in, memoize_method
 from pytential.qbx.cost import AbstractQBXCostModel
+from pytential.symbolic.compiler import Code, Statement, Assign, ComputePotential
 
 from pytential import sym
+from pytential.symbolic.dof_desc import _UNNAMED_SOURCE, _UNNAMED_TARGET
 
 import logging
 logger = logging.getLogger(__name__)
@@ -575,8 +577,6 @@ def _prepare_domains(nresults, places, domains, default_domain):
 
 def _prepare_auto_where(auto_where, places=None):
     """
-    :arg auto_where: a 2-tuple, single identifier or `None` used as a hint
-        to determine the default geometries.
     :arg places: a :class:`pytential.collection.GeometryCollection`,
         whose :attr:`pytential.collection.GeometryCollection.auto_where` is
         used by default if provided and `auto_where` is `None`.
@@ -587,15 +587,15 @@ def _prepare_auto_where(auto_where, places=None):
 
     if auto_where is None:
         if places is None:
-            auto_source = sym.DEFAULT_SOURCE
-            auto_target = sym.DEFAULT_TARGET
+            auto_source = _UNNAMED_SOURCE
+            auto_target = _UNNAMED_TARGET
         else:
             auto_source, auto_target = places.auto_where
     elif isinstance(auto_where, (list, tuple)):
         auto_source, auto_target = auto_where
     else:
         auto_source = auto_where
-        auto_target = auto_source
+        auto_target = auto_where
 
     return (sym.as_dofdesc(auto_source), sym.as_dofdesc(auto_target))
 
@@ -625,6 +625,46 @@ def _prepare_expr(places, expr, auto_where=None):
     expr = InterpolationPreprocessor(places)(expr)
 
     return expr
+
+# }}}
+
+
+# {{{ code execution
+
+def _get_exec_function(stmt: Statement, exec_mapper):
+    if isinstance(stmt, Assign):
+        return exec_mapper.exec_assign
+    if isinstance(stmt, ComputePotential):
+        return exec_mapper.exec_compute_potential_insn
+    raise ValueError(f"unknown statement class: {type(stmt)}")
+
+
+def execute(code: Code, exec_mapper, pre_assign_check=None) -> np.ndarray:
+    for name in code.inputs:
+        if name not in exec_mapper.context:
+            raise ValueError(f"missing input: '{name}'")
+
+    context = exec_mapper.context
+
+    for stmt, discardable_vars in code._schedule:
+        for name in discardable_vars:
+            del context[name]
+
+        assignments = (
+                _get_exec_function(stmt, exec_mapper)(
+                    exec_mapper.array_context,
+                    stmt, exec_mapper.bound_expr, exec_mapper))
+
+        assignees = stmt.get_assignees()
+        for target, value in assignments:
+            if pre_assign_check is not None:
+                pre_assign_check(target, value)
+
+            assert target in assignees
+            context[target] = value
+
+    from pytools.obj_array import obj_array_vectorize
+    return obj_array_vectorize(exec_mapper, code.result)
 
 # }}}
 
@@ -706,7 +746,7 @@ class BoundExpression:
         :arg calibration_params: either a :class:`dict` returned by
             `estimate_kernel_specific_calibration_params`, or a :class:`str`
             "constant_one".
-        :return: a :class:`dict` mapping from instruction to per-stage cost. Each
+        :return: a :class:`dict` mapping from statement to per-stage cost. Each
             per-stage cost is represented by a :class:`dict` mapping from the stage
             name to the predicted time.
         """
@@ -715,7 +755,7 @@ class BoundExpression:
         cost_model_mapper = CostModelMapper(
             self, array_context, calibration_params, per_box=False, context=kwargs
         )
-        self.code.execute(cost_model_mapper)
+        execute(self.code, cost_model_mapper)
         return cost_model_mapper.get_modeled_cost()
 
     def cost_per_box(self, calibration_params, **kwargs):
@@ -723,7 +763,7 @@ class BoundExpression:
         :arg calibration_params: either a :class:`dict` returned by
             `estimate_kernel_specific_calibration_params`, or a :class:`str`
             "constant_one".
-        :return: a :class:`dict` mapping from instruction to per-box cost. Each
+        :return: a :class:`dict` mapping from statement to per-box cost. Each
             per-box cost is represented by a :class:`numpy.ndarray` or
             :class:`pyopencl.array.Array` of shape (nboxes,), where the ith entry
             represents the cost of all stages for box i.
@@ -733,7 +773,7 @@ class BoundExpression:
         cost_model_mapper = CostModelMapper(
             self, array_context, calibration_params, per_box=True, context=kwargs
         )
-        self.code.execute(cost_model_mapper)
+        execute(self.code, cost_model_mapper)
         return cost_model_mapper.get_modeled_cost()
 
     def scipy_op(
@@ -743,9 +783,8 @@ class BoundExpression:
         :arg domains: a list of discretization identifiers or
             *None* values indicating the domains on which each component of the
             solution vector lives.  *None* values indicate that the component
-            is a scalar.  If *domains* is *None*,
-            :class:`~pytential.symbolic.dof_desc.DEFAULT_TARGET` is required
-            to be a key in :attr:`places`.
+            is a scalar. If the value of *domains* is *None*, the default
+            target from *places* is used.
         :returns: An object that (mostly) satisfies the
             :class:`scipy.sparse.linalg.LinearOperator` protocol, except for
             accepting and returning :class:`pyopencl.array.Array` arrays.
@@ -824,7 +863,7 @@ class BoundExpression:
 
         exec_mapper = EvaluationMapper(
                 self, array_context, context, timing_data=timing_data)
-        return self.code.execute(exec_mapper)
+        return execute(self.code, exec_mapper)
 
     def __call__(self, *args, **kwargs):
         """Evaluate the expression in *self*, using the
@@ -861,6 +900,9 @@ def bind(places, expr, auto_where=None, _merge_exprs=True):
         constructor can also be used.
     :arg auto_where: for simple source-to-self or source-to-target
         evaluations, find 'where' attributes automatically.
+        This is a 2-tuple, single identifier or `None` to determine the
+        default geometries. When `None`, a tuple of unspecified unique
+        identifiers are used.
     :arg expr: one or multiple expressions consisting of primitives
         form :mod:`pytential.symbolic.primitives` (aka ``pytential.sym``).
         Multiple expressions can be combined into one object to pass here
@@ -936,10 +978,9 @@ def build_matrix(actx, places, exprs, input_exprs, domains=None,
         input block columns of the matrix. May also be a single expression.
     :arg domains: a list of discretization identifiers (see 'places') or
         *None* values indicating the domains on which each component of the
-        solution vector lives.  *None* values indicate that the component
-        is a scalar.  If *None*, *auto_where* or, if it is not provided,
-        :class:`~pytential.symbolic.dof_desc.DEFAULT_SOURCE` is required
-        to be a key in :attr:`places`.
+        solution vector lives. *None* values indicate that the component
+        is a scalar. If the value of *domains* is *None*, the default
+        source from *places* is used.
     :arg auto_where: For simple source-to-self or source-to-target
         evaluations, find 'where' attributes automatically.
     """
@@ -972,16 +1013,13 @@ def build_matrix(actx, places, exprs, input_exprs, domains=None,
 
     dtypes = []
     for ibcol in range(nblock_columns):
-        dep_source = places.get_geometry(domains[ibcol].geometry)
         dep_discr = places.get_discretization(
                 domains[ibcol].geometry, domains[ibcol].discr_stage)
 
         mbuilder = MatrixBuilder(
                 actx,
                 dep_expr=input_exprs[ibcol],
-                other_dep_exprs=(input_exprs[:ibcol]
-                                 + input_exprs[ibcol + 1:]),
-                dep_source=dep_source,
+                other_dep_exprs=input_exprs[:ibcol] + input_exprs[ibcol + 1:],
                 dep_discr=dep_discr,
                 places=places,
                 context=context)

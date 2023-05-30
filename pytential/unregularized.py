@@ -119,11 +119,10 @@ class UnregularizedLayerPotentialSource(LayerPotentialSourceBase):
 
     def op_group_features(self, expr):
         from pytential.utils import sort_arrays_together
-        from sumpy.kernel import TargetTransformationRemover
         result = (
                 expr.source,
                 *sort_arrays_together(expr.source_kernels, expr.densities, key=str),
-                TargetTransformationRemover()(expr.target_kernel),
+                expr.target_kernel.get_base_kernel(),
                 )
 
         return result
@@ -332,7 +331,7 @@ class _FMMGeometryDataCodeContainer:
         knl = lp.tag_array_axes(knl, "points", "sep, C")
 
         knl = lp.tag_array_axes(knl, "targets", "stride:auto, stride:1")
-        return lp.tag_inames(knl, dict(dim="ilp"))
+        return lp.tag_inames(knl, {"dim": "ilp"})
 
     @property
     @memoize_method

@@ -70,7 +70,7 @@ def main():
         kernel_kwargs = {}
 
     def get_op():
-        kwargs = dict(qbx_forced_limit=None)
+        kwargs = {"qbx_forced_limit": None}
         kwargs.update(kernel_kwargs)
         # return sym.d_dx(2, sym.S(kernel, sym.var("sigma"), **kwargs))
         # return sym.D(kernel, sym.var("sigma"), **kwargs)
@@ -79,10 +79,6 @@ def main():
     op = get_op()
 
     sigma = actx.np.cos(mode_nr*angle)
-
-    if isinstance(kernel, HelmholtzKernel):
-        for i, elem in np.ndenumerate(sigma):
-            sigma[i] = elem.astype(np.complex128)
 
     fld_in_vol = actx.to_numpy(
             bind(
