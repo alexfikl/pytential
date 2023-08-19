@@ -1,5 +1,6 @@
 __copyright__ = """
-Copyright (C) 2020 Isuru Fernando
+Copyright (C) 2020 Matt Wala
+Copyright (C) 2023 University of Illinois Board of Trustees
 """
 
 __license__ = """
@@ -21,6 +22,8 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
+
+import sys
 
 import sumpy.symbolic as sym
 
@@ -90,5 +93,27 @@ def lu_solve_with_expand(L, U, perm, b):
 
     return backward_substitution(U,
             forward_substitution(L, permuteFwd(b, perm)))
+
+
+def pytest_teardown_function():
+    from pyopencl.tools import clear_first_arg_caches
+    clear_first_arg_caches()
+
+    from sympy.core.cache import clear_cache
+    clear_cache()
+
+    import sumpy
+    sumpy.code_cache.clear_in_mem_cache()
+
+    from loopy import clear_in_mem_caches
+    clear_in_mem_caches()
+
+    import gc
+    gc.collect()
+
+    if sys.platform.startswith("linux"):
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6")
+        libc.malloc_trim(0)
 
 # vim: foldmethod=marker

@@ -43,6 +43,9 @@ import extra_matrix_data as extra
 import logging
 logger = logging.getLogger(__name__)
 
+from pytential.utils import (  # noqa: F401
+        pytest_teardown_function as teardown_function)
+
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
     PytestPyOpenCLArrayContextFactory,
     ])
@@ -52,9 +55,13 @@ def max_cluster_error(mat, clusters, mindex, p=None):
     error = -np.inf
     for i in range(mindex.nclusters):
         mat_i = mindex.cluster_take(mat, i, i)
+        norm_mat_i = la.norm(mat_i, ord=p)
+        if norm_mat_i < 1.0e-12:
+            norm_mat_i = 1.0
+
         error = max(
                 error,
-                la.norm(mat_i - clusters[i, i], ord=p) / la.norm(mat_i, ord=p)
+                la.norm(mat_i - clusters[i, i], ord=p) / norm_mat_i
                 )
 
     return error
@@ -71,10 +78,6 @@ def test_build_matrix(actx_factory, k, curve_fn, op_type, visualize=False):
     """
 
     actx = actx_factory()
-
-    # prevent cache 'splosion
-    from sympy.core.cache import clear_cache
-    clear_cache()
 
     case = extra.CurveTestCase(
             name="curve",
@@ -192,10 +195,6 @@ def test_build_matrix_conditioning(actx_factory, side, op_type, visualize=False)
 
     actx = actx_factory()
 
-    # prevent cache explosion
-    from sympy.core.cache import clear_cache
-    clear_cache()
-
     case = extra.CurveTestCase(
             name="ellipse",
             curve_fn=lambda t: ellipse(3.0, t),
@@ -301,10 +300,6 @@ def test_cluster_builder(actx_factory, ambient_dim,
     """Test that cluster builders and full matrix builders actually match."""
 
     actx = actx_factory()
-
-    # prevent cache explosion
-    from sympy.core.cache import clear_cache
-    clear_cache()
 
     if ambient_dim == 2:
         case = extra.CurveTestCase(
@@ -420,10 +415,6 @@ def test_build_matrix_fixed_stage(actx_factory,
     """Checks that the block builders match for difference stages."""
 
     actx = actx_factory()
-
-    # prevent cache explosion
-    from sympy.core.cache import clear_cache
-    clear_cache()
 
     case = extra.CurveTestCase(
             name="starfish",

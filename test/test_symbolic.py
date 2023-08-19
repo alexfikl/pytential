@@ -40,6 +40,9 @@ from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 import logging
 logger = logging.getLogger(__name__)
 
+from pytential.utils import (  # noqa: F401
+        pytest_teardown_function as teardown_function)
+
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
     PytestPyOpenCLArrayContextFactory,
     ])
@@ -439,7 +442,7 @@ def _make_operator(ambient_dim: int, op_name: str, k: float, *, side: int = +1):
 
     import pytential.symbolic.pde.scalar as ops
     if op_name == "dirichlet":
-        op = ops.DirichletOperator(
+        op: ops.L2WeightedPDEOperator = ops.DirichletOperator(
                 kernel, side, use_l2_weighting=True,
                 kernel_arguments=kernel_arguments)
     elif op_name == "neumann":
@@ -533,20 +536,23 @@ def test_derivative_with_spatial_constant():
     ambient_dim = 3
 
     from sumpy.kernel import LaplaceKernel
+    knl = LaplaceKernel(ambient_dim)
+    density = sym.var("sigma")
+
     sym.d_dx(ambient_dim,
             sym.SpatialConstant("kappa")
-            * sym.D(LaplaceKernel(ambient_dim), sym.Variable("sigma")))
+            * sym.D(knl, density, qbx_forced_limit="avg"))
 
     from sumpy.kernel import LaplaceKernel
     sym.d_dx(ambient_dim,
             (3+sym.SpatialConstant("kappa"))
-            * sym.D(LaplaceKernel(ambient_dim), sym.Variable("sigma")))
+            * sym.D(knl, density, qbx_forced_limit="avg"))
 
     from pytential.symbolic.mappers import _DerivativeTakerUnsupoortedProductError
     with pytest.raises(_DerivativeTakerUnsupoortedProductError):
         sym.d_dx(ambient_dim,
                 (3+sym.Variable("kappa"))
-                * sym.D(LaplaceKernel(ambient_dim), sym.Variable("sigma")))
+                * sym.D(knl, density, qbx_forced_limit="avg"))
 
 # }}}
 

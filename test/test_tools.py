@@ -33,6 +33,9 @@ from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 import logging
 logger = logging.getLogger(__name__)
 
+from pytential.utils import (  # noqa: F401
+        pytest_teardown_function as teardown_function)
+
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
     PytestPyOpenCLArrayContextFactory,
     ])
@@ -66,8 +69,6 @@ def test_gmres():
 # {{{ test_interpolatory_error_reporting
 
 def test_interpolatory_error_reporting(actx_factory):
-    logging.basicConfig(level=logging.INFO)
-
     actx = actx_factory()
 
     h = 0.2
@@ -97,7 +98,9 @@ def test_interpolatory_error_reporting(actx_factory):
     one = 1 + 0*vol_x[0]
     from meshmode.discretization import NoninterpolatoryElementGroupError
     with pytest.raises(NoninterpolatoryElementGroupError):
-        print("AREA", integral(vol_discr, one), 0.25**2*np.pi)
+        logger.info("AREA integral %g exact %g",
+                    actx.to_numpy(integral(vol_discr, one)).item(),
+                    0.25**2*np.pi)
 
 # }}}
 
@@ -154,7 +157,7 @@ def test_geometry_collection_caching(actx_factory):
     # construct a geometry collection
     from pytential import GeometryCollection
     places = GeometryCollection(dict(zip(sources, lpots)), auto_where=sources[0])
-    print(places.places)
+    logger.info("%s", places.places)
 
     # check on-demand refinement
     from pytential import bind, sym

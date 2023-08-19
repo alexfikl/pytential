@@ -22,11 +22,11 @@ THE SOFTWARE.
 
 from dataclasses import dataclass
 from typing import (
-        Any, Callable, Dict, Hashable, Iterable, Optional, Tuple, Union)
+        Any, Callable, Dict, Hashable, Optional, Sequence, Tuple, Union)
 
 import numpy as np
 
-from arraycontext import PyOpenCLArrayContext, Array, ArrayT
+from arraycontext import PyOpenCLArrayContext, Array
 
 from pytential import GeometryCollection, sym
 from pytential.linalg.utils import IndexList, TargetAndSourceClusterList
@@ -132,7 +132,9 @@ def _approximate_geometry_waa_magnitude(
             <> ioffset = starts[icluster]
             <> npoints = starts[icluster + 1] - ioffset
             result[icluster] = reduce(sum, i, waa[indices[i + ioffset]]) / npoints
-            """)
+            """,
+            lang_version=lp.MOST_RECENT_LANGUAGE_VERSION,
+            )
 
         return knl
 
@@ -141,7 +143,7 @@ def _approximate_geometry_waa_magnitude(
     result = actx.zeros((cluster_index.nclusters,), dtype=waa.entry_dtype)
 
     from arraycontext import flatten
-    _, (waa_per_cluster,) = prg()(actx.queue,         # pylint: disable=not-callable
+    _, (waa_per_cluster,) = prg()(actx.queue,
             waa=flatten(waa, actx),
             result=result,
             indices=cluster_index.indices,
@@ -152,11 +154,11 @@ def _approximate_geometry_waa_magnitude(
 
 def _apply_weights(
         actx: PyOpenCLArrayContext,
-        mat: ArrayT,
+        mat: np.ndarray,
         places: GeometryCollection,
         tgt_pxy_index: TargetAndSourceClusterList,
         cluster_index: IndexList,
-        domain: sym.DOFDescriptor) -> ArrayT:
+        domain: sym.DOFDescriptor) -> np.ndarray:
     """Computes the weights using :func:`_approximate_geometry_waa_magnitude`
     and multiplies each cluster in *mat* by its corresponding weight.
 
@@ -376,9 +378,9 @@ class SkeletonizationWrangler:
 
 def make_skeletonization_wrangler(
         places: GeometryCollection,
-        exprs: Union[sym.var, Iterable[sym.var]],
-        input_exprs: Union[sym.var, Iterable[sym.var]], *,
-        domains: Optional[Iterable[Hashable]] = None,
+        exprs: Union[sym.var, Sequence[sym.var]],
+        input_exprs: Union[sym.var, Sequence[sym.var]], *,
+        domains: Optional[Sequence[Hashable]] = None,
         context: Optional[Dict[str, Any]] = None,
         auto_where: Optional[Union[Hashable, Tuple[Hashable, Hashable]]] = None,
 
@@ -403,9 +405,9 @@ def make_skeletonization_wrangler(
     except TypeError:
         input_exprs = [input_exprs]
 
-    from pytential.symbolic.execution import _prepare_auto_where
+    from pytential.symbolic.execution import _prepare_auto_where, _prepare_domains
+
     auto_where = _prepare_auto_where(auto_where, places)
-    from pytential.symbolic.execution import _prepare_domains
     domains = _prepare_domains(len(input_exprs), places, domains, auto_where[0])
 
     exprs = prepare_expr(places, exprs, auto_where)
@@ -604,18 +606,19 @@ def _skeletonize_block_by_proxy_with_mats(
                 ibrow=ibrow, ibcol=ibcol)
             )
 
-    src_skl_indices = np.empty(nclusters, dtype=object)
-    tgt_skl_indices = np.empty(nclusters, dtype=object)
-    skel_starts = np.zeros(nclusters + 1, dtype=np.int32)
+    src_skl_indices: np.ndarray = np.empty(nclusters, dtype=object)
+    tgt_skl_indices: np.ndarray = np.empty(nclusters, dtype=object)
+    skel_starts: np.ndarray = np.zeros(nclusters + 1, dtype=np.int32)
 
-    L = np.empty(nclusters, dtype=object)
-    R = np.empty(nclusters, dtype=object)
+    L: np.ndarray = np.empty(nclusters, dtype=object)
+    R: np.ndarray = np.empty(nclusters, dtype=object)
 
     from pytential.linalg import interp_decomp
     for i in range(nclusters):
         k = id_rank
         src_mat = np.vstack(src_result[i])
         tgt_mat = np.hstack(tgt_result[i])
+        max_allowable_rank = min(*src_mat.shape, *tgt_mat.shape)
 
         if __debug__:
             isfinite = np.isfinite(tgt_mat)
@@ -625,25 +628,30 @@ def _skeletonize_block_by_proxy_with_mats(
 
         # skeletonize target points
         k, idx, interp = interp_decomp(tgt_mat.T, rank=k, eps=id_eps)
-        assert k > 0
+        assert 0 < k <= len(idx)
+
+        if k > max_allowable_rank:
+            k = max_allowable_rank
+            interp = interp[:k, :]
 
         L[i] = interp.T
         tgt_skl_indices[i] = tgt_src_index.targets.cluster_indices(i)[idx[:k]]
+        assert L[i].shape == (tgt_mat.shape[0], k)
 
         # skeletonize source points
         k, idx, interp = interp_decomp(src_mat, rank=k, eps=None)
-        assert k > 0
+        assert 0 < k <= len(idx)
 
         R[i] = interp
         src_skl_indices[i] = tgt_src_index.sources.cluster_indices(i)[idx[:k]]
+        assert R[i].shape == (k, src_mat.shape[1])
 
         skel_starts[i + 1] = skel_starts[i] + k
-        assert R[i].shape == (k, src_mat.shape[1])
-        assert L[i].shape == (tgt_mat.shape[0], k)
+        assert tgt_skl_indices[i].shape == src_skl_indices[i].shape
 
     from pytential.linalg import make_index_list
-    src_skl_index = make_index_list(np.hstack(src_skl_indices), skel_starts)
-    tgt_skl_index = make_index_list(np.hstack(tgt_skl_indices), skel_starts)
+    src_skl_index = make_index_list(np.hstack(list(src_skl_indices)), skel_starts)
+    tgt_skl_index = make_index_list(np.hstack(list(tgt_skl_indices)), skel_starts)
     skel_tgt_src_index = TargetAndSourceClusterList(tgt_skl_index, src_skl_index)
 
     return SkeletonizationResult(
@@ -739,9 +747,9 @@ def skeletonize_by_proxy(
         places: GeometryCollection,
 
         tgt_src_index: TargetAndSourceClusterList,
-        exprs: Union[sym.var, Iterable[sym.var]],
-        input_exprs: Union[sym.var, Iterable[sym.var]], *,
-        domains: Optional[Iterable[Hashable]] = None,
+        exprs: Union[sym.var, Sequence[sym.var]],
+        input_exprs: Union[sym.var, Sequence[sym.var]], *,
+        domains: Optional[Sequence[Hashable]] = None,
         context: Optional[Dict[str, Any]] = None,
 
         approx_nproxy: Optional[int] = None,
@@ -780,7 +788,7 @@ def skeletonize_by_proxy(
             approx_nproxy=approx_nproxy,
             radius_factor=proxy_radius_factor)
 
-    skels = np.empty((wrangler.nrows, wrangler.ncols), dtype=object)
+    skels: np.ndarray = np.empty((wrangler.nrows, wrangler.ncols), dtype=object)
     for ibrow in range(wrangler.nrows):
         for ibcol in range(wrangler.ncols):
             skels[ibrow, ibcol] = _skeletonize_block_by_proxy_with_mats(

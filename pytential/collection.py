@@ -23,14 +23,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from typing import Dict, Hashable, Optional, Tuple, Union
+from typing import Any, Dict, Hashable, Mapping, Optional, Tuple, Union
 
-from pytential import sym
-from pytential.symbolic.execution import EvaluationMapperCSECacheKey
+import immutables
+
 from pytential.symbolic.dof_desc import DOFDescriptorLike, DiscretizationStages
+import pytential.symbolic.primitives as sym
 
-from pytential.target import TargetBase
-from pytential.source import PotentialSource
+from pytential.target import PointsTarget, TargetBase
+from pytential.source import (
+    LayerPotentialSourceBase, PointPotentialSource, PotentialSource)
 from pytential.qbx import QBXLayerPotentialSource
 from meshmode.discretization import Discretization
 
@@ -66,13 +68,6 @@ class _GeometryCollectionConnectionCacheKey:
     """Serves as a unique key for the connection cache in
     :meth:`GeometryCollection._get_cache`.
     """
-
-
-_KNOWN_GEOMETRY_COLLECTION_CACHE_KEYS = (
-        EvaluationMapperCSECacheKey,
-        _GeometryCollectionConnectionCacheKey,
-        _GeometryCollectionDiscretizationCacheKey,
-        )
 
 
 # {{{ geometry collection
@@ -121,7 +116,7 @@ class GeometryCollection:
             places: Union[
                 "GeometryLike",
                 Tuple["GeometryLike", "GeometryLike"],
-                Dict[Hashable, "GeometryLike"]
+                Mapping[Hashable, "GeometryLike"]
                 ],
             auto_where: Optional[AutoWhereLike] = None) -> None:
         r"""
@@ -146,31 +141,35 @@ class GeometryCollection:
 
         # {{{ construct dict
 
-        places_dict = {}
+        places_dict: Mapping[Hashable, GeometryLike] = {}
 
         from pytential.symbolic.execution import _prepare_auto_where
         auto_source, auto_target = _prepare_auto_where(auto_where)
         if isinstance(places, QBXLayerPotentialSource):
-            places_dict[auto_source.geometry] = places
+            places_dict = {auto_source.geometry: places}
             auto_target = auto_source
         elif isinstance(places, TargetBase):
-            places_dict[auto_target.geometry] = places
+            places_dict = {auto_target.geometry: places}
             auto_source = auto_target
         if isinstance(places, (Discretization, PotentialSource)):
-            places_dict[auto_source.geometry] = places
-            places_dict[auto_target.geometry] = places
+            places_dict = {
+                auto_source.geometry: places,
+                auto_target.geometry: places
+            }
         elif isinstance(places, tuple):
             source_discr, target_discr = places
-            places_dict[auto_source.geometry] = source_discr
-            places_dict[auto_target.geometry] = target_discr
+            places_dict = {
+                auto_source.geometry: source_discr,
+                auto_target.geometry: target_discr
+            }
         else:
+            assert isinstance(places, Mapping)
             places_dict = places
 
-        import immutables
         self.places = immutables.Map(places_dict)
         self.auto_where = (auto_source, auto_target)
 
-        self._caches = {}
+        self._caches: Dict[str, Any] = {}
 
         # }}}
 
@@ -321,9 +320,6 @@ class GeometryCollection:
             discr_stage = sym.QBX_SOURCE_STAGE1
         discr = self.get_geometry(geometry)
 
-        from pytential.qbx import QBXLayerPotentialSource
-        from pytential.source import LayerPotentialSourceBase
-
         if isinstance(discr, QBXLayerPotentialSource):
             return self._get_qbx_discretization(geometry, discr_stage)
         elif isinstance(discr, LayerPotentialSourceBase):
@@ -343,7 +339,7 @@ class GeometryCollection:
 
     def copy(
             self,
-            places: Optional[Dict[Hashable, "GeometryLike"]] = None,
+            places: Optional[Mapping[Hashable, "GeometryLike"]] = None,
             auto_where: Optional[AutoWhereLike] = None,
             ) -> "GeometryCollection":
         """Get a shallow copy of the geometry collection."""
@@ -353,20 +349,20 @@ class GeometryCollection:
 
     def merge(
             self,
-            places: Union["GeometryCollection", Dict[Hashable, "GeometryLike"]],
+            places: Union["GeometryCollection", Mapping[Hashable, "GeometryLike"]],
             ) -> "GeometryCollection":
         """Merges two geometry collections and returns the new collection.
 
-        :arg places: a :class:`dict` or :class:`GeometryCollection` to
+        :arg places: a mapping or :class:`GeometryCollection` to
             merge with the current collection. If it is empty, a copy of the
             current collection is returned.
         """
 
-        new_places = self.places
+        new_places = dict(self.places)
         if places:
-            if isinstance(places, GeometryCollection):
-                places = places.places
-            new_places = new_places.update(places)
+            new_places.update(
+                places.places if isinstance(places, GeometryCollection)
+                else places)
 
         return self.copy(places=new_places)
 
@@ -384,8 +380,8 @@ class GeometryCollection:
 
 def add_geometry_to_collection(
         places: GeometryCollection,
-        geometries: Dict[Hashable, "GeometryLike"]) -> GeometryCollection:
-    """Adds a :class:`dict` of geometries to an existing collection.
+        geometries: Mapping[Hashable, "GeometryLike"]) -> GeometryCollection:
+    """Adds a mapping of geometries to an existing collection.
 
     This function is similar to :meth:`GeometryCollection.merge`, but it makes
     an attempt to maintain the caches in *places*. In particular, a shallow
@@ -399,8 +395,6 @@ def add_geometry_to_collection(
     This allows adding new targets to the collection without recomputing the
     source geometry data.
     """
-    from pytential.source import PointPotentialSource
-    from pytential.target import PointsTarget
     for key, geometry in geometries.items():
         if key in places.places:
             raise ValueError(f"geometry '{key}' already in the collection")
@@ -411,13 +405,21 @@ def add_geometry_to_collection(
                     "to the existing collection. Construct a new collection "
                     "instead.")
 
+    from pytential.symbolic.execution import EvaluationMapperCSECacheKey
+
+    known_cache_keys = (
+            EvaluationMapperCSECacheKey,
+            _GeometryCollectionConnectionCacheKey,
+            _GeometryCollectionDiscretizationCacheKey,
+            )
+
     # copy over all the caches
     new_places = places.merge(geometries)
     for key in places._caches:
-        if key not in _KNOWN_GEOMETRY_COLLECTION_CACHE_KEYS:
+        if key not in known_cache_keys:
             from warnings import warn
             warn(f"GeometryCollection cache key '{key}' is not known and will "
-                    "be dropped in the new collection.")
+                 "be dropped in the new collection.")
             continue
 
         new_cache = new_places._get_cache(key)

@@ -22,6 +22,7 @@ THE SOFTWARE.
 
 from dataclasses import replace
 from functools import partial
+from typing import Sequence, Union
 import pytest
 
 import numpy as np
@@ -40,11 +41,14 @@ import extra_matrix_data as extra
 import logging
 logger = logging.getLogger(__name__)
 
+from pytential.utils import (  # noqa: F401
+        pytest_teardown_function as teardown_function)
+
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
     PytestPyOpenCLArrayContextFactory,
     ])
 
-SKELETONIZE_TEST_CASES = [
+SKELETONIZE_TEST_CASES: Sequence[Union[extra.CurveTestCase, extra.TorusTestCase]] = [
         extra.CurveTestCase(
             name="ellipse",
             op_type="scalar",
@@ -354,7 +358,7 @@ def test_skeletonize_by_proxy(actx_factory, case, visualize=False):
     empirically determined (not too huge) :math:`c`.
     """
 
-    import scipy.linalg.interpolative as sli    # pylint:disable=no-name-in-module
+    import scipy.linalg.interpolative as sli
     sli.seed(42)
 
     actx = actx_factory()
@@ -384,7 +388,7 @@ CONVERGENCE_TEST_CASES = [
         extra.GMSHSphereTestCase(
             target_order=8,
             op_type="scalar",
-            resolutions=[0.4]),
+            resolutions=[0.4]),     # type: ignore[list-item]
         ]
 
 
@@ -401,7 +405,7 @@ def test_skeletonize_by_proxy_convergence(
     accuracy of the skeletonization scales linearly with :math:`\epsilon_{id}`
     (the ID tolerance).
     """
-    import scipy.linalg.interpolative as sli    # pylint:disable=no-name-in-module
+    import scipy.linalg.interpolative as sli
     sli.seed(42)
 
     actx = actx_factory()

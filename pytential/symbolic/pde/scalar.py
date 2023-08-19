@@ -27,8 +27,7 @@ __doc__ = """
 .. autoclass:: BiharmonicClampedPlateOperator
 """
 
-from numbers import Number
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import numpy as np
 
@@ -156,7 +155,7 @@ class DirichletOperator(L2WeightedPDEOperator):
     """
 
     def __init__(self, kernel: Kernel, loc_sign: int, *,
-            alpha: Optional[Number] = None,
+            alpha: Optional[Union[int, float, complex]] = None,
             use_l2_weighting: bool = False,
             kernel_arguments: Optional[Dict[str, Any]] = None):
         """
@@ -214,7 +213,7 @@ class DirichletOperator(L2WeightedPDEOperator):
         inv_sqrt_w_u = sym.cse(u/sqrt_w)
 
         if map_potentials is None:
-            def map_potentials(x):  # pylint:disable=function-redefined
+            def map_potentials(x):
                 return x
 
         kwargs["kernel_arguments"] = self.kernel_arguments
@@ -295,7 +294,7 @@ class NeumannOperator(L2WeightedPDEOperator):
     """
 
     def __init__(self, kernel: Kernel, loc_sign: int, *,
-            alpha: Optional[Number] = None,
+            alpha: Optional[Union[int, float, complex]] = None,
             use_improved_operator: bool = True,
             use_l2_weighting: bool = False,
             kernel_arguments: Optional[Dict[str, Any]] = None):
@@ -351,7 +350,7 @@ class NeumannOperator(L2WeightedPDEOperator):
         laplace_s_inv_sqrt_w_u = sym.cse(sym.S(self.laplace_kernel, inv_sqrt_w_u))
 
         if map_potentials is None:
-            def map_potentials(x):  # pylint:disable=function-redefined
+            def map_potentials(x):
                 return x
 
         kwargs["qbx_forced_limit"] = qbx_forced_limit
@@ -411,7 +410,8 @@ class NeumannOperator(L2WeightedPDEOperator):
             else:
                 raise ValueError(f"no improved operator for '{self.kernel}' known")
         else:
-            DpS0u = sym.Dp(self.kernel, laplace_s_inv_sqrt_w_u, **kwargs)
+            DpS0u = sym.Dp(self.kernel, laplace_s_inv_sqrt_w_u,
+                           qbx_forced_limit=+1, **kwargs)
 
         if self.is_unique_only_up_to_constant():
             # The interior Neumann operator in this representation
@@ -504,7 +504,7 @@ class BiharmonicClampedPlateOperator:
         """
 
         if map_potentials is None:
-            def map_potentials(x):  # pylint:disable=function-redefined
+            def map_potentials(x):
                 return x
 
         def dv(knl):

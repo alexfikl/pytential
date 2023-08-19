@@ -27,6 +27,7 @@ import numpy as np
 import numpy.linalg as la
 
 from arraycontext import PyOpenCLArrayContext, flatten
+from meshmode.discretization import Discretization
 from meshmode.dof_array import DOFArray
 
 from pytools import memoize_in
@@ -88,8 +89,13 @@ def partition_by_nodes(
     if max_particles_in_box is None:
         max_particles_in_box = _DEFAULT_MAX_PARTICLES_IN_BOX
 
+    from pytential.source import LayerPotentialSourceBase
+
     lpot_source = places.get_geometry(dofdesc.geometry)
+    assert isinstance(lpot_source, LayerPotentialSourceBase)
+
     discr = places.get_discretization(dofdesc.geometry, dofdesc.discr_stage)
+    assert isinstance(discr, Discretization)
 
     if tree_kind is not None:
         from pytential.qbx.utils import tree_code_container
@@ -109,8 +115,8 @@ def partition_by_nodes(
                 tree.box_flags & box_flags_enum.HAS_SOURCE_OR_TARGET_CHILD_BOXES == 0
                 ).nonzero()
 
-        indices = np.empty(len(leaf_boxes), dtype=object)
-        starts = None
+        indices: np.ndarray = np.empty(len(leaf_boxes), dtype=object)
+        starts: Optional[np.ndarray] = None
 
         for i, ibox in enumerate(leaf_boxes):
             box_start = tree.box_source_starts[ibox]
@@ -247,10 +253,14 @@ class ProxyClusterGeometryData:
 
     def as_sources(self) -> ProxyPointSource:
         lpot_source = self.places.get_geometry(self.dofdesc.geometry)
+        assert isinstance(lpot_source, QBXLayerPotentialSource)
+
         return ProxyPointSource(lpot_source, self.points)
 
     def as_targets(self) -> ProxyPointTarget:
         lpot_source = self.places.get_geometry(self.dofdesc.geometry)
+        assert isinstance(lpot_source, QBXLayerPotentialSource)
+
         return ProxyPointTarget(lpot_source, self.points)
 
 # }}}
@@ -280,9 +290,9 @@ def _generate_unit_sphere(ambient_dim: int, approx_npoints: int) -> np.ndarray:
     return points
 
 
-def make_compute_cluster_centers_knl(
-        actx: PyOpenCLArrayContext, ndim: int, norm_type: str) -> lp.LoopKernel:
-    @memoize_in(actx, (make_compute_cluster_centers_knl, ndim, norm_type))
+def make_compute_cluster_centers_kernel_ex(
+        actx: PyOpenCLArrayContext, ndim: int, norm_type: str) -> lp.ExecutorBase:
+    @memoize_in(actx, (make_compute_cluster_centers_kernel_ex, ndim, norm_type))
     def prg():
         if norm_type == "l2":
             # NOTE: computes first-order approximation of the source centroids
@@ -330,7 +340,7 @@ def make_compute_cluster_centers_knl(
         knl = lp.tag_inames(knl, "idim*:unr")
         knl = lp.split_iname(knl, "icluster", 64, outer_tag="g.0")
 
-        return knl
+        return knl.executor(actx.context)
 
     return prg()
 
@@ -399,11 +409,11 @@ class ProxyGeneratorBase:
     def nproxy(self) -> int:
         return self.ref_points.shape[1]
 
-    def get_centers_knl(self, actx: PyOpenCLArrayContext) -> lp.LoopKernel:
-        return make_compute_cluster_centers_knl(
+    def get_centers_kernel_ex(self, actx: PyOpenCLArrayContext) -> lp.ExecutorBase:
+        return make_compute_cluster_centers_kernel_ex(
                 actx, self.ambient_dim, self.norm_type)
 
-    def get_radii_knl(self, actx: PyOpenCLArrayContext) -> lp.LoopKernel:
+    def get_radii_kernel_ex(self, actx: PyOpenCLArrayContext) -> lp.ExecutorBase:
         raise NotImplementedError
 
     def __call__(self,
@@ -424,6 +434,7 @@ class ProxyGeneratorBase:
 
         discr = self.places.get_discretization(
                 source_dd.geometry, source_dd.discr_stage)
+        assert isinstance(discr, Discretization)
 
         include_cluster_radii = kwargs.pop("include_cluster_radii", False)
 
@@ -431,13 +442,13 @@ class ProxyGeneratorBase:
 
         sources = flatten(discr.nodes(), actx, leaf_class=DOFArray)
 
-        knl = self.get_centers_knl(actx)
+        knl = self.get_centers_kernel_ex(actx)
         _, (centers_dev,) = knl(actx.queue,
                 sources=sources,
                 srcindices=dof_index.indices,
                 srcstarts=dof_index.starts)
 
-        knl = self.get_radii_knl(actx)
+        knl = self.get_radii_kernel_ex(actx)
         _, (radii_dev,) = knl(actx.queue,
                 sources=sources,
                 srcindices=dof_index.indices,
@@ -447,7 +458,7 @@ class ProxyGeneratorBase:
                 **kwargs)
 
         if include_cluster_radii:
-            knl = make_compute_cluster_radii_knl(actx, self.ambient_dim)
+            knl = make_compute_cluster_radii_kernel_ex(actx, self.ambient_dim)
             _, (cluster_radii,) = knl(actx.queue,
                     sources=sources,
                     srcindices=dof_index.indices,
@@ -493,9 +504,9 @@ class ProxyGeneratorBase:
                 )
 
 
-def make_compute_cluster_radii_knl(
-        actx: PyOpenCLArrayContext, ndim: int) -> lp.LoopKernel:
-    @memoize_in(actx, (make_compute_cluster_radii_knl, ndim))
+def make_compute_cluster_radii_kernel_ex(
+        actx: PyOpenCLArrayContext, ndim: int) -> lp.ExecutorBase:
+    @memoize_in(actx, (make_compute_cluster_radii_kernel_ex, ndim))
     def prg():
         knl = lp.make_kernel([
             "{[icluster]: 0 <= icluster < nclusters}",
@@ -529,7 +540,7 @@ def make_compute_cluster_radii_knl(
         knl = lp.tag_inames(knl, "idim*:unr")
         knl = lp.split_iname(knl, "icluster", 64, outer_tag="g.0")
 
-        return knl
+        return knl.executor(actx.context)
 
     return prg()
 
@@ -541,13 +552,13 @@ class ProxyGenerator(ProxyGeneratorBase):
     Inherits from :class:`ProxyGeneratorBase`.
     """
 
-    def get_radii_knl(self, actx: PyOpenCLArrayContext) -> lp.LoopKernel:
-        return make_compute_cluster_radii_knl(actx, self.ambient_dim)
+    def get_radii_kernel_ex(self, actx: PyOpenCLArrayContext) -> lp.ExecutorBase:
+        return make_compute_cluster_radii_kernel_ex(actx, self.ambient_dim)
 
 
-def make_compute_cluster_qbx_radii_knl(
-        actx: PyOpenCLArrayContext, ndim: int) -> lp.LoopKernel:
-    @memoize_in(actx, (make_compute_cluster_qbx_radii_knl, ndim))
+def make_compute_cluster_qbx_radii_kernel_ex(
+        actx: PyOpenCLArrayContext, ndim: int) -> lp.ExecutorBase:
+    @memoize_in(actx, (make_compute_cluster_qbx_radii_kernel_ex, ndim))
     def prg():
         knl = lp.make_kernel([
             "{[icluster]: 0 <= icluster < nclusters}",
@@ -593,7 +604,7 @@ def make_compute_cluster_qbx_radii_knl(
         knl = lp.tag_inames(knl, "idim*:unr")
         knl = lp.split_iname(knl, "icluster", 64, outer_tag="g.0")
 
-        return knl
+        return knl.executor(actx.context)
 
     return prg()
 
@@ -605,8 +616,8 @@ class QBXProxyGenerator(ProxyGeneratorBase):
     Inherits from :class:`ProxyGeneratorBase`.
     """
 
-    def get_radii_knl(self, actx: PyOpenCLArrayContext) -> lp.LoopKernel:
-        return make_compute_cluster_qbx_radii_knl(actx, self.ambient_dim)
+    def get_radii_kernel_ex(self, actx: PyOpenCLArrayContext) -> lp.ExecutorBase:
+        return make_compute_cluster_qbx_radii_kernel_ex(actx, self.ambient_dim)
 
     def __call__(self,
             actx: PyOpenCLArrayContext,
@@ -646,19 +657,20 @@ def gather_cluster_neighbor_points(
     if max_particles_in_box is None:
         max_particles_in_box = _DEFAULT_MAX_PARTICLES_IN_BOX
 
-    dofdesc = pxy.dofdesc
-    lpot_source = pxy.places.get_geometry(dofdesc.geometry)
-    discr = pxy.places.get_discretization(dofdesc.geometry, dofdesc.discr_stage)
+    from pytential.source import LayerPotentialSourceBase
 
     dofdesc = pxy.dofdesc
     lpot_source = pxy.places.get_geometry(dofdesc.geometry)
+    assert isinstance(lpot_source, LayerPotentialSourceBase)
+
     discr = pxy.places.get_discretization(dofdesc.geometry, dofdesc.discr_stage)
+    assert isinstance(discr, Discretization)
 
     # {{{ get only sources in the current cluster set
 
     @memoize_in(actx,
             (gather_cluster_neighbor_points, discr.ambient_dim, "picker_knl"))
-    def prg():
+    def prg() -> lp.ExecutorBase:
         knl = lp.make_kernel(
             "{[idim, i]: 0 <= idim < ndim and 0 <= i < npoints}",
             """
@@ -677,7 +689,7 @@ def gather_cluster_neighbor_points(
         knl = lp.tag_inames(knl, "idim*:unr")
         knl = lp.split_iname(knl, "i", 64, outer_tag="g.0")
 
-        return knl
+        return knl.executor(actx.context)
 
     _, (sources,) = prg()(actx.queue,
             ary=flatten(discr.nodes(), actx, leaf_class=DOFArray),
@@ -705,7 +717,7 @@ def gather_cluster_neighbor_points(
     pxyradii = actx.to_numpy(pxy.radii)
     srcindex = pxy.srcindex
 
-    nbrindices = np.empty(srcindex.nclusters, dtype=object)
+    nbrindices: np.ndarray = np.empty(srcindex.nclusters, dtype=object)
     for icluster in range(srcindex.nclusters):
         # get list of boxes intersecting the current ball
         istart = query.leaves_near_ball_starts[icluster]

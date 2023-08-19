@@ -205,10 +205,10 @@ class MuellerAugmentedMFIEOperator:
     def make_unknown(self, name):
         return sym.make_sym_vector(name, 6)
 
-    unk_structure = namedtuple("MuellerUnknowns", ["jt", "rho_e", "mt", "rho_m"])
+    MuellerUnknowns = namedtuple("MuellerUnknowns", ["jt", "rho_e", "mt", "rho_m"])
 
     def split_unknown(self, unk):
-        return self.unk_structure(
+        return self.MuellerUnknowns(
             jt=unk[:2],
             rho_e=unk[2],
             mt=unk[3:5],
@@ -246,7 +246,7 @@ class MuellerAugmentedMFIEOperator:
         F3 = (xyz_to_tangential(sym.n_cross(E1-E0) + 0.5*(mu0+mu1)*Mxyz))
 
         # sign flip included
-        F4 = -sym.n_dot(mu1*H1-mu0*H0) + 0.5*(mu1+mu0)*u.rho_m  # noqa pylint:disable=invalid-unary-operand-type
+        F4 = -sym.n_dot(mu1*H1-mu0*H0) + 0.5*(mu1+mu0)*u.rho_m
 
         return sym.flat_obj_array(F1, F2, F3, F4)
 
