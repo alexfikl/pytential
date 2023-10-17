@@ -383,9 +383,9 @@ def test_cost_model(actx_factory, dim, use_target_specific_qbx, per_box):
     op_S = bind(places, sym_op_S)
 
     if per_box:
-        cost_S, _ = op_S.cost_per_box("constant_one", sigma=sigma)
+        _cost_S, _ = op_S.cost_per_box("constant_one", sigma=sigma)
     else:
-        cost_S, _ = op_S.cost_per_stage("constant_one", sigma=sigma)
+        _cost_S, _ = op_S.cost_per_stage("constant_one", sigma=sigma)
 
     sym_op_S_plus_D = (
             sym.S(k_sym, sigma_sym, qbx_forced_limit=+1)
@@ -393,11 +393,11 @@ def test_cost_model(actx_factory, dim, use_target_specific_qbx, per_box):
     op_S_plus_D = bind(places, sym_op_S_plus_D)
 
     if per_box:
-        cost_S_plus_D, _ = op_S_plus_D.cost_per_box(
+        _cost_S_plus_D, _ = op_S_plus_D.cost_per_box(
             "constant_one", sigma=sigma
         )
     else:
-        cost_S_plus_D, _ = op_S_plus_D.cost_per_stage(
+        _cost_S_plus_D, _ = op_S_plus_D.cost_per_stage(
             "constant_one", sigma=sigma
         )
 
