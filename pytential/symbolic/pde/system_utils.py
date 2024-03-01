@@ -20,31 +20,33 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import numpy as np
-
-import sumpy.symbolic as sym
-import pymbolic
-from sumpy.kernel import (AxisTargetDerivative, AxisSourceDerivative,
-    ExpressionKernel, KernelWrapper, TargetPointMultiplier, Kernel,
-    DirectionalSourceDerivative)
-from pytools import (memoize_on_first_arg,
-    generate_nonnegative_integer_tuples_summing_to_at_most
-    as gnitstam)
-
-from pytential.symbolic.primitives import (NodeCoordinateComponent,
-    hashable_kernel_args, IntG, DEFAULT_SOURCE)
-from pytential.symbolic.mappers import IdentityMapper
-from pytential.utils import chop, solve_from_lu
-import pytential
-
-from typing import List, Mapping, Text, Any, Union, Tuple, Optional, Sequence
-from pytential.symbolic.typing import ExpressionT
-
+import logging
 import warnings
 from dataclasses import dataclass
+from typing import Any, List, Mapping, Optional, Sequence, Text, Tuple, TypeVar
 
-import logging
+import numpy as np
+
+import pymbolic
+import sumpy.symbolic as sym
+from pytools import (
+    generate_nonnegative_integer_tuples_summing_to_at_most as gnitstam,
+    memoize_on_first_arg)
+from sumpy.kernel import (
+    AxisSourceDerivative, AxisTargetDerivative, DirectionalSourceDerivative,
+    ExpressionKernel, Kernel, KernelWrapper, TargetPointMultiplier)
+
+import pytential
+from pytential.symbolic.mappers import IdentityMapper
+from pytential.symbolic.primitives import (
+    DEFAULT_SOURCE, IntG, NodeCoordinateComponent, hashable_kernel_args)
+from pytential.symbolic.typing import ExpressionT
+from pytential.utils import chop, solve_from_lu
+
+
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T", sym.Basic, ExpressionT)
 
 __all__ = (
     "rewrite_using_base_kernel",
@@ -130,17 +132,16 @@ def _get_sympy_kernel_expression(expr: ExpressionT,
     return res
 
 
-def _monom_to_expr(monom: Sequence[int],
-        variables: Sequence[Union[sym.Basic, ExpressionT]]) \
-        -> Union[sym.Basic, ExpressionT]:
+def _monom_to_expr(monom: Sequence[int], variables: Sequence[T]) -> T:
     """Convert a monomial to an expression using given variables.
 
     For eg: [3, 2, 1] with variables [x, y, z] is converted to x^3 y^2 z.
     """
-    prod = 1
+    prod: T = 1
     for i, nrepeats in enumerate(monom):
         for _ in range(nrepeats):
             prod *= variables[i]
+
     return prod
 
 
@@ -156,6 +157,7 @@ def convert_target_transformation_to_source(int_g: IntG) -> List[IntG]:
        IntG(x*r, sigma) -> [IntG(r, sigma*y), IntG(r*(x -y), sigma)]
     """
     import sympy
+
     from pymbolic.interop.sympy import SympyToPymbolicMapper
     conv = SympyToPymbolicMapper()
 
@@ -287,12 +289,14 @@ def _multiply_int_g(int_g: IntG, expr_multiplier: sym.Basic,
     return result
 
 
-def rewrite_int_g_using_base_kernel(int_g: IntG, base_kernel: ExpressionKernel) \
-        -> ExpressionT:
+def rewrite_int_g_using_base_kernel(
+        int_g: IntG,
+        base_kernel: ExpressionKernel
+        ) -> ExpressionT:
     """Rewrite an *IntG* to an expression with *IntG*s having the
     base kernel *base_kernel*.
     """
-    result = 0
+    result: ExpressionT = 0
     for knl, density in zip(int_g.source_kernels, int_g.densities):
         result += _rewrite_int_g_using_base_kernel(
                 int_g.copy(source_kernels=(knl,), densities=(density,)),
@@ -300,8 +304,10 @@ def rewrite_int_g_using_base_kernel(int_g: IntG, base_kernel: ExpressionKernel) 
     return result
 
 
-def _rewrite_int_g_using_base_kernel(int_g: IntG, base_kernel: ExpressionKernel) \
-        -> ExpressionT:
+def _rewrite_int_g_using_base_kernel(
+        int_g: IntG,
+        base_kernel: ExpressionKernel,
+        ) -> ExpressionT:
     r"""Rewrites an ``IntG`` with only one source kernel to an expression with
     ``IntG``\ s having the base kernel *base_kernel*.
     """
@@ -523,10 +529,9 @@ def _get_base_kernel_matrix_lu_factorization(base_kernel: ExpressionKernel,
         row.append(1)
         mat.append(row)
 
-    mat = sym.Matrix(mat)
     failed = False
     try:
-        L, U, perm = mat.LUdecomposition()
+        L, U, perm = sym.Matrix(mat).LUdecomposition()
     except RuntimeError:
         # symengine throws an error when rank deficient
         # and sympy returns U with last row zero
@@ -584,8 +589,9 @@ def filter_kernel_arguments(knls, kernel_arguments):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
-    from sumpy.kernel import (StokesletKernel, BiharmonicKernel,  # noqa:F401
-        StressletKernel, ElasticityKernel, LaplaceKernel)
+    from sumpy.kernel import (  # noqa:F401
+        BiharmonicKernel, ElasticityKernel, LaplaceKernel, StokesletKernel,
+        StressletKernel)
     base_kernel = BiharmonicKernel(2)
     #base_kernel = LaplaceKernel(3)
     kernels = [StokesletKernel(2, 0, 1), StokesletKernel(2, 0, 0)]

@@ -23,133 +23,234 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import numpy as np
-
-from pytential import sym
-from pytential.symbolic.pde.system_utils import rewrite_using_base_kernel
-from sumpy.kernel import (StressletKernel, LaplaceKernel, StokesletKernel,
-    ElasticityKernel, BiharmonicKernel, Kernel,
-    AxisTargetDerivative, AxisSourceDerivative, TargetPointMultiplier)
-from sumpy.symbolic import SpatialConstant
-from pytential.symbolic.typing import ExpressionT
-
+import enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
-from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+import numpy as np
+
+from pytools.obj_array import make_obj_array
+from sumpy.kernel import (
+    AxisSourceDerivative, AxisTargetDerivative, BiharmonicKernel, ElasticityKernel,
+    Kernel, LaplaceKernel, StokesletKernel, StressletKernel, TargetPointMultiplier)
+from sumpy.symbolic import SpatialConstant
+
+from pytential import sym
+from pytential.symbolic.pde.system_utils import rewrite_using_base_kernel
+from pytential.symbolic.typing import ExpansionLimitType, ExpressionT
+
 
 __doc__ = """
+.. autoclass:: RepresentationType
+.. autofunction:: make_elasticity_wrapper
+.. autofunction:: make_elasticity_double_layer_wrapper
+
 .. autoclass:: ElasticityWrapperBase
 .. autoclass:: ElasticityDoubleLayerWrapperBase
-.. autoclass:: Method
 
-.. automethod:: pytential.symbolic.elasticity.make_elasticity_wrapper
-.. automethod:: pytential.symbolic.elasticity.make_elasticity_double_layer_wrapper
+.. autoclass:: ElasticityWrapperNaive
+.. autoclass:: ElasticityDoubleLayerWrapperNaive
+
+.. autoclass:: ElasticityWrapperBiharmonic
+.. autoclass:: ElasticityDoubleLayerWrapperBiharmonic
+
+.. autoclass:: ElasticityWrapperYoshida
+.. autoclass:: ElasticityDoubleLayerWrapperYoshida
 """
 
-
-# {{{ ElasiticityWrapper ABCs
-
-# It is OK if these "escape" into pytential expressions because mappers will
-# use the MRO to dispatch them to `map_variable`.
-_MU_SYM_DEFAULT = SpatialConstant("mu")
-_NU_SYM_DEFAULT = SpatialConstant("nu")
+# {{{ entrypoints
 
 
-@dataclass
+class RepresentationType(enum.Enum):
+    """Base kernel used in elasticity representations."""
+
+    #: Use the standard diadic or triadic kernel.
+    Naive = enum.auto()
+    #: Use the Laplace kernel as a base kernel.
+    Laplace = enum.auto()
+    #: Use the biharmonic kernel as a base kernel.
+    Biharmonic = 3
+
+
+def make_elasticity_wrapper(
+        dim: int,
+        mu: Union[ExpressionT, str] = "mu",
+        nu: Union[ExpressionT, str] = "nu",
+        repr_type: RepresentationType = RepresentationType.Naive,
+        ) -> "ElasticityWrapperBase":
+    """Creates a :class:`ElasticityWrapperBase` object for the given inputs.
+
+    If *nu* is :math:`0.5` (as a literal), this can also create an appropriate
+    :func:`~pytential.symbolic.stokes.StokesletWrapperBase`.
+
+    :param repr_type: representation to use in the elasticity kernel.
+    :return: an appropriate :class:`ElasticityWrapperBase` for the given dimension
+        or parameters.
+    """
+    if not isinstance(repr_type, RepresentationType):
+        raise TypeError("'repr_type' must be a 'RepresentationType' enum value")
+
+    if isinstance(mu, str):
+        mu = SpatialConstant(mu)
+
+    if isinstance(nu, str):
+        nu = SpatialConstant(nu)
+
+    if nu == 0.5:
+        from pytential.symbolic.stokes import make_stokeslet_wrapper
+        return make_stokeslet_wrapper(dim=dim, mu=mu, repr_type=repr_type)
+
+    if repr_type == RepresentationType.Naive:
+        return ElasticityWrapperNaive(dim=dim, mu=mu, nu=nu)
+    elif repr_type == RepresentationType.Biharmonic:
+        return ElasticityWrapperBiharmonic(dim=dim, mu=mu, nu=nu)
+    elif repr_type == RepresentationType.Laplace:
+        return ElasticityWrapperYoshida(dim=dim, mu=mu, nu=nu)
+    else:
+        raise AssertionError()
+
+
+def make_elasticity_double_layer_wrapper(
+        dim: int,
+        mu: Union[ExpressionT, str] = "mu",
+        nu: Union[ExpressionT, str] = "nu",
+        repr_type: RepresentationType = RepresentationType.Naive
+        ) -> "ElasticityDoubleLayerWrapperBase":
+    """Creates a :class:`ElasticityWrapperBase` object for the given inputs.
+
+    If *nu* is :math:`0.5` (as a literal), this can also create an appropriate
+    :func:`~pytential.symbolic.stokes.StokesletWrapperBase`.
+
+    :param repr_type: representation to use in the elasticity kernel.
+    :return: an appropriate :class:`ElasticityWrapperBase` for the given dimension
+        or parameters.
+    """
+    if isinstance(mu, str):
+        mu = SpatialConstant(mu)
+
+    if isinstance(nu, str):
+        nu = SpatialConstant(nu)
+
+    if nu == 0.5:
+        from pytential.symbolic.stokes import make_stresslet_wrapper
+        return make_stresslet_wrapper(dim=dim, mu=mu, repr_type=repr_type)
+
+    if repr_type == RepresentationType.Naive:
+        return ElasticityDoubleLayerWrapperNaive(dim=dim, mu=mu, nu=nu)
+    elif repr_type == RepresentationType.Biharmonic:
+        return ElasticityDoubleLayerWrapperBiharmonic(dim=dim, mu=mu, nu=nu)
+    elif repr_type == RepresentationType.Laplace:
+        return ElasticityDoubleLayerWrapperYoshida(dim=dim, mu=mu, nu=nu)
+    else:
+        raise AssertionError()
+
+# }}}
+
+
+# {{{ ABCs
+
+@dataclass(frozen=True)
 class ElasticityWrapperBase(ABC):
-    """Wrapper class for the :class:`~sumpy.kernel.ElasticityKernel` kernel.
-
-    This class is meant to shield the user from the messiness of writing
-    out every term in the expansion of the double-indexed Elasticity kernel
-    applied to the density vector.  The object is created
-    to do some of the set-up and bookkeeping once, rather than every
-    time we want to create a symbolic expression based on the kernel -- say,
-    once when we solve for the density, and once when we want a symbolic
-    representation for the solution, for example.
+    """Wrapper class for the single-layer of the
+    :class:`~sumpy.kernel.ElasticityKernel` kernel.
 
     The :meth:`apply` function returns the integral expressions needed for
-    the vector velocity resulting from convolution with the vector density,
-    and is meant to work similarly to calling
-    :func:`~pytential.symbolic.primitives.S` (which is
-    :class:`~pytential.symbolic.primitives.IntG`).
+    the displacement fields resulting from the convolution with the vector density.
+    It is meant to work similarly to calling :func:`~pytential.symbolic.primitives.S`
+    (which is a :class:`~pytential.symbolic.primitives.IntG`).
 
-    Similar functions are available for other useful things related to
-    the flow: :meth:`apply_derivative` (target derivative).
+    .. autoattribute:: dim
+    .. autoattribute:: mu
+    .. autoattribute:: nu
 
     .. automethod:: apply
     .. automethod:: apply_derivative
     """
+
+    #: Ambient dimension.
     dim: int
+    #: Expression or value for the shear modulus.
     mu: ExpressionT
+    #: Expression or value for Poisson's ratio.
     nu: ExpressionT
 
     @abstractmethod
-    def apply(self, density_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
-        """Symbolic expressions for integrating Elasticity kernel.
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        """Symbolic expressions the single-layer potential.
 
-        Returns an object array of symbolic expressions for the vector
-        resulting from integrating the dyadic Elasticity kernel with
-        variable *density_vec_sym*.
+        We construct an object array of symbolic expressions for the vector
+        resulting from integrating the dyadic kernel with *density_vec_sym*
+        as the density.
 
         :arg density_vec_sym: a symbolic vector variable for the density vector.
         :arg qbx_forced_limit: the *qbx_forced_limit* argument to be passed on
             to :class:`~pytential.symbolic.primitives.IntG`.
         :arg extra_deriv_dirs: adds target derivatives to all the integral
-            objects with the given derivative axis.
+            objects with the given derivative axis. Setting this to ``(i,)``
+            is equivalent to calling :meth:`apply_derivative`.
         """
 
-    def apply_derivative(self, deriv_dir, density_vec_sym, qbx_forced_limit):
-        """Symbolic derivative of velocity from Elasticity kernel.
+    def apply_derivative(self,
+                         deriv_dir: int,
+                         density_vec_sym: np.ndarray,
+                         qbx_forced_limit: ExpansionLimitType) -> np.ndarray:
+        """Symbolic derivative the single-layer potential.
 
-        Returns an object array of symbolic expressions for the vector
+        We construct an object array of symbolic expressions for the vector
         resulting from integrating the *deriv_dir* target derivative of the
-        dyadic Elasticity kernel with variable *density_vec_sym*.
+        dyadic kernel with *density_vec_sym* as the density. This is equivalent
+        to calling :meth:`apply` with ``(deriv_dir,)``.
 
         :arg deriv_dir: integer denoting the axis direction for the derivative.
         :arg density_vec_sym: a symbolic vector variable for the density vector.
         :arg qbx_forced_limit: the *qbx_forced_limit* argument to be passed on
             to :class:`~pytential.symbolic.primitives.IntG`.
         """
-        return self.apply(density_vec_sym, qbx_forced_limit, (deriv_dir,))
+        return self.apply(density_vec_sym, qbx_forced_limit,
+                          extra_deriv_dirs=(deriv_dir,))
 
 
-@dataclass
+@dataclass(frozen=True)
 class ElasticityDoubleLayerWrapperBase(ABC):
-    """Wrapper class for the double layer of
+    """Wrapper class for the double-layer of the
     :class:`~sumpy.kernel.ElasticityKernel` kernel.
-
-    This class is meant to shield the user from the messiness of writing
-    out every term in the expansion of the triple-indexed Stresslet
-    kernel applied to both a normal vector and the density vector.
-    The object is created to do some of the set-up and bookkeeping once,
-    rather than every time we want to create a symbolic expression based
-    on the kernel -- say, once when we solve for the density, and once when
-    we want a symbolic representation for the solution, for example.
 
     The :meth:`apply` function returns the integral expressions needed for
     convolving the kernel with a vector density, and is meant to work
-    similarly to :func:`~pytential.symbolic.primitives.S` (which is
+    similarly to :func:`~pytential.symbolic.primitives.D` (which is
     :class:`~pytential.symbolic.primitives.IntG`).
 
-    Similar functions are available for other useful things related to
-    the flow: :meth:`apply_derivative` (target derivative).
+    .. autoattribute:: dim
+    .. autoattribute:: mu
+    .. autoattribute:: nu
 
     .. automethod:: apply
     .. automethod:: apply_derivative
     """
+
+    #: Ambient dimension.
     dim: int
+    #: Expression or value for the shear modulus.
     mu: ExpressionT
+    #: Expression or value for Poisson's ratio.
     nu: ExpressionT
 
     @abstractmethod
-    def apply(self, density_vec_sym, dir_vec_sym, qbx_forced_limit,
-            extra_deriv_dirs=()):
-        """Symbolic expressions for integrating Stresslet kernel.
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              dir_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        """Symbolic expressions for integrating double-layer potential.
 
-        Returns an object array of symbolic expressions for the vector
-        resulting from integrating the dyadic Stresslet kernel with
-        variable *density_vec_sym* and source direction vectors *dir_vec_sym*.
+        We construct an object array of symbolic expressions for the vector
+        resulting from integrating the triadic kernel with density
+        *density_vec_sym* and source direction vector *dir_vec_sym*.
 
         :arg density_vec_sym: a symbolic vector variable for the density vector.
         :arg dir_vec_sym: a symbolic vector variable for the direction vector.
@@ -158,15 +259,18 @@ class ElasticityDoubleLayerWrapperBase(ABC):
         :arg extra_deriv_dirs: adds target derivatives to all the integral
             objects with the given derivative axis.
         """
-        raise NotImplementedError
 
-    def apply_derivative(self, deriv_dir, density_vec_sym, dir_vec_sym,
-            qbx_forced_limit):
-        """Symbolic derivative of velocity from Elasticity kernel.
+    def apply_derivative(self,
+                         deriv_dir: int,
+                         density_vec_sym: np.ndarray,
+                         dir_vec_sym: np.ndarray,
+                         qbx_forced_limit: ExpansionLimitType) -> np.ndarray:
+        """Symbolic derivative of the double-layer potential.
 
-        Returns an object array of symbolic expressions for the vector
+        We construct an object array of symbolic expressions for the vector
         resulting from integrating the *deriv_dir* target derivative of the
-        dyadic Elasticity kernel with variable *density_vec_sym*.
+        triadic kernel with density *density_vec_sym* and source direction
+        vector *dir_vec_sym*.
 
         :arg deriv_dir: integer denoting the axis direction for the derivative.
         :arg density_vec_sym: a symbolic vector variable for the density vector.
@@ -175,19 +279,26 @@ class ElasticityDoubleLayerWrapperBase(ABC):
             to :class:`~pytential.symbolic.primitives.IntG`.
         """
         return self.apply(density_vec_sym, dir_vec_sym, qbx_forced_limit,
-                (deriv_dir,))
+                          extra_deriv_dirs=(deriv_dir,))
 
 # }}}
 
 
-# {{{ Naive and Biharmonic impl
+# {{{ Naive and Biharmonic helpers
 
-def _create_int_g(knl, deriv_dirs, density, **kwargs):
-    for deriv_dir in deriv_dirs:
+def _make_int_g(
+        knl: Kernel,
+        density_sym: Any,
+        *,
+        extra_deriv_dirs: Tuple[int, ...],
+        **kwargs: Any) -> np.ndarray:
+    for deriv_dir in extra_deriv_dirs:
         knl = AxisTargetDerivative(deriv_dir, knl)
 
-    kernel_arg_names = {karg.loopy_arg.name
-            for karg in (knl.get_args() + knl.get_source_args())}
+    kernel_arg_names = {
+        arg.loopy_arg.name
+        for arg in (knl.get_args() + knl.get_source_args())
+    }
 
     # When the kernel is Laplace, mu and nu are not kernel arguments
     # Also when nu==0.5, it's not a kernel argument to StokesletKernel
@@ -195,109 +306,85 @@ def _create_int_g(knl, deriv_dirs, density, **kwargs):
         if var_name not in kernel_arg_names:
             kwargs.pop(var_name)
 
-    res = sym.int_g_vec(knl, density, **kwargs)
-    return res
+    return sym.int_g_vec(knl, density_sym, **kwargs)
 
 
-@dataclass
-class _ElasticityWrapperNaiveOrBiharmonic:
-    dim: int
-    mu: ExpressionT
-    nu: ExpressionT
-    base_kernel: Kernel
-
+@dataclass(frozen=True)
+class _ElasticityWrapperWithKernel(ElasticityWrapperBase):
     def __post_init__(self):
-        if not (self.dim == 3 or self.dim == 2):
+        if self.dim not in (2, 3):
             raise ValueError(
-                    f"unsupported dimension given to ElasticityWrapper: {self.dim}")
+                f"Unsupported dimension for '{type(self).__name__}': {self.dim}")
+
+    @property
+    @abstractmethod
+    def base_kernel(self) -> Optional[Kernel]:
+        """The base kernel used in representing the vector kernel."""
 
     @cached_property
-    def kernel_dict(self):
-        d = {}
+    def kernel_dict(self) -> Dict[Tuple[int, int], Kernel]:
         # The dictionary allows us to exploit symmetry -- that
         # :math:`T_{01}` is identical to :math:`T_{10}` -- and avoid creating
         # multiple expansions for the same kernel in a different ordering.
+
+        d = {}
         for i in range(self.dim):
             for j in range(i, self.dim):
                 if self.nu == 0.5:
-                    d[(i, j)] = StokesletKernel(dim=self.dim, icomp=i,
-                        jcomp=j)
+                    d[(i, j)] = StokesletKernel(dim=self.dim, icomp=i, jcomp=j)
                 else:
-                    d[(i, j)] = ElasticityKernel(dim=self.dim, icomp=i,
-                        jcomp=j)
+                    d[(i, j)] = ElasticityKernel(dim=self.dim, icomp=i, jcomp=j)
+
                 d[(j, i)] = d[(i, j)]
 
         return d
 
-    def _get_int_g(self, idx, density_sym, dir_vec_sym, qbx_forced_limit,
-            deriv_dirs):
-        """
-        Returns the convolution of the elasticity kernel given by `idx`
-        and its derivatives.
-        """
-        res = _create_int_g(self.kernel_dict[idx], deriv_dirs,
-                    density=density_sym*dir_vec_sym[idx[-1]],
-                    qbx_forced_limit=qbx_forced_limit, mu=self.mu,
-                    nu=self.nu)/(2*(1-self.nu))
-        return res
-
-    def apply(self, density_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
-
-        sym_expr = np.zeros((self.dim,), dtype=object)
-
-        # For stokeslet, there's no direction vector involved
-        # passing a list of ones instead to remove its usage.
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        sym_expr: List[ExpressionT] = [0] * self.dim
         for comp in range(self.dim):
             for i in range(self.dim):
-                sym_expr[comp] += self._get_int_g((comp, i),
-                        density_vec_sym[i], [1]*self.dim,
-                        qbx_forced_limit, deriv_dirs=extra_deriv_dirs)
+                intg = _make_int_g(
+                    self.kernel_dict[comp, i],
+                    density_vec_sym[i],
+                    extra_deriv_dirs=extra_deriv_dirs,
+                    qbx_forced_limit=qbx_forced_limit,
+                    mu=self.mu,
+                    nu=self.nu)
 
-        return np.array(rewrite_using_base_kernel(sym_expr,
-            base_kernel=self.base_kernel))
+                sym_expr[comp] += intg / (2 * (1 - self.nu))
 
-
-class ElasticityWrapperNaive(_ElasticityWrapperNaiveOrBiharmonic,
-                             ElasticityWrapperBase):
-    def __init__(self, dim, mu, nu):
-        super().__init__(dim=dim, mu=mu, nu=nu, base_kernel=None)
-        ElasticityWrapperBase.__init__(self, dim=dim, mu=mu, nu=nu)
-
-
-class ElasticityWrapperBiharmonic(_ElasticityWrapperNaiveOrBiharmonic,
-                                  ElasticityWrapperBase):
-    def __init__(self, dim, mu, nu):
-        super().__init__(dim=dim, mu=mu, nu=nu,
-                base_kernel=BiharmonicKernel(dim))
-        ElasticityWrapperBase.__init__(self, dim=dim, mu=mu, nu=nu)
+        return make_obj_array(
+            rewrite_using_base_kernel(sym_expr, base_kernel=self.base_kernel)
+            )
 
 
-# }}}
+ELASTICITY_DLP_LAPLACE_IDX = (-1, -1, -1)
 
 
-# {{{ ElasticityDoubleLayerWrapper Naive and Biharmonic impl
-
-@dataclass
-class _ElasticityDoubleLayerWrapperNaiveOrBiharmonic:
-    dim: int
-    mu: ExpressionT
-    nu: ExpressionT
-    base_kernel: Kernel
-
+@dataclass(frozen=True)
+class _ElasticityDoubleLayerWrapperWithKernel(ElasticityDoubleLayerWrapperBase):
     def __post_init__(self):
-        if not (self.dim == 3 or self.dim == 2):
-            raise ValueError("unsupported dimension given to "
-                             f"ElasticityDoubleLayerWrapper: {self.dim}")
+        if self.dim not in (2, 3):
+            raise ValueError(
+                f"Unsupported dimension for '{type(self).__name__}': {self.dim}")
+
+    @property
+    @abstractmethod
+    def base_kernel(self) -> Optional[Kernel]:
+        """The base kernel used in representing the vector kernel."""
 
     @cached_property
-    def kernel_dict(self):
+    def kernel_dict(self) -> Dict[Tuple[int, int, int], Kernel]:
         d = {}
 
         for i in range(self.dim):
             for j in range(i, self.dim):
                 for k in range(j, self.dim):
-                    d[(i, j, k)] = StressletKernel(dim=self.dim, icomp=i,
-                            jcomp=j, kcomp=k)
+                    d[i, j, k] = (
+                        StressletKernel(dim=self.dim, icomp=i, jcomp=j, kcomp=k))
 
         # The dictionary allows us to exploit symmetry -- that
         # :math:`T_{012}` is identical to :math:`T_{120}` -- and avoid creating
@@ -307,336 +394,323 @@ class _ElasticityDoubleLayerWrapperNaiveOrBiharmonic:
                 for k in range(self.dim):
                     if (i, j, k) in d:
                         continue
-                    s = tuple(sorted([i, j, k]))
-                    d[(i, j, k)] = d[s]
 
-        # For elasticity (nu != 0.5), we need the laplacian of the
+                    i0, j0, k0 = sorted([i, j, k])
+                    d[i, j, k] = d[i0, j0, k0]
+
+        # For elasticity (nu != 0.5), we need the Laplacian of the
         # BiharmonicKernel which is the LaplaceKernel.
-        if self.nu != 0.5:
-            d["laplacian"] = LaplaceKernel(self.dim)
+        d[ELASTICITY_DLP_LAPLACE_IDX] = LaplaceKernel(self.dim)
 
         return d
 
-    def _get_int_g(self, idx, density_sym, dir_vec_sym, qbx_forced_limit,
-            deriv_dirs):
+    def _get_int_g(self,
+                   idx: Tuple[int, int, int],
+                   density_sym: Any,
+                   dir_vec_sym: np.ndarray,
+                   *,
+                   qbx_forced_limit: ExpansionLimitType,
+                   extra_deriv_dirs: Tuple[int, ...]):
         """
         Returns the convolution of the double layer of the elasticity kernel
         given by `idx` and its derivatives.
         """
 
         nu = self.nu
-        kernel_indices = [idx]
-        dir_vec_indices = [idx[-1]]
-        coeffs = [1]
-        extra_deriv_dirs_vec = [[]]
-
-        kernel_indices = [idx, "laplacian", "laplacian", "laplacian"]
+        kernel_indices = [idx] + [ELASTICITY_DLP_LAPLACE_IDX] * 3
         dir_vec_indices = [idx[-1], idx[1], idx[0], idx[2]]
         coeffs = [1, (1 - 2*nu)/self.dim, -(1 - 2*nu)/self.dim, -(1 - 2*nu)]
-        extra_deriv_dirs_vec = [[], [idx[0]], [idx[1]], [idx[2]]]
+        extra_deriv_dirs_vec = [(), (idx[0],), (idx[1],), (idx[2],)]
+
         if idx[0] != idx[1]:
             coeffs[-1] = 0
 
-        result = 0
-        for kernel_idx, dir_vec_idx, coeff, extra_deriv_dirs in \
-                zip(kernel_indices, dir_vec_indices, coeffs,
-                        extra_deriv_dirs_vec):
+        result: ExpressionT = 0
+        for kernel_idx, dir_vec_idx, coeff, extra_deriv_dirs in (
+                zip(kernel_indices, dir_vec_indices, coeffs, extra_deriv_dirs_vec)
+                ):
             if coeff == 0:
                 continue
+
             knl = self.kernel_dict[kernel_idx]
-            result += _create_int_g(knl, tuple(deriv_dirs) + tuple(extra_deriv_dirs),
-                    density=density_sym*dir_vec_sym[dir_vec_idx],
-                    qbx_forced_limit=qbx_forced_limit, mu=self.mu, nu=self.nu) * \
-                            coeff
-        return result/(2*(1 - nu))
+            result += _make_int_g(
+                knl,
+                density_sym * dir_vec_sym[dir_vec_idx],
+                extra_deriv_dirs=extra_deriv_dirs + extra_deriv_dirs,
+                qbx_forced_limit=qbx_forced_limit,
+                mu=self.mu,
+                nu=self.nu) * coeff
 
-    def apply(self, density_vec_sym, dir_vec_sym, qbx_forced_limit,
-            extra_deriv_dirs=()):
+        return result / (2 * (1 - nu))
 
-        sym_expr = np.zeros((self.dim,), dtype=object)
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              dir_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        sym_expr: List[ExpressionT] = [0] * self.dim
 
         for comp in range(self.dim):
             for i in range(self.dim):
                 for j in range(self.dim):
-                    sym_expr[comp] += self._get_int_g((comp, i, j),
-                        density_vec_sym[i], dir_vec_sym,
-                        qbx_forced_limit, deriv_dirs=extra_deriv_dirs)
+                    sym_expr[comp] += self._get_int_g(
+                        (comp, i, j),
+                        density_vec_sym[i],
+                        dir_vec_sym,
+                        qbx_forced_limit=qbx_forced_limit,
+                        extra_deriv_dirs=extra_deriv_dirs)
 
-        return np.array(rewrite_using_base_kernel(sym_expr,
-            base_kernel=self.base_kernel))
-
-    def apply_single_and_double_layer(self, stokeslet_density_vec_sym,
-            stresslet_density_vec_sym, dir_vec_sym,
-            qbx_forced_limit, stokeslet_weight, stresslet_weight,
-            extra_deriv_dirs=()):
-
-        stokeslet_obj = _ElasticityWrapperNaiveOrBiharmonic(dim=self.dim,
-                mu=self.mu, nu=self.nu, base_kernel=self.base_kernel)
-
-        sym_expr = 0
-        if stresslet_weight != 0:
-            sym_expr += self.apply(stresslet_density_vec_sym, dir_vec_sym,
-                qbx_forced_limit, extra_deriv_dirs) * stresslet_weight
-        if stokeslet_weight != 0:
-            sym_expr += stokeslet_obj.apply(stokeslet_density_vec_sym,
-                qbx_forced_limit, extra_deriv_dirs) * stokeslet_weight
-
-        return sym_expr
-
-
-class ElasticityDoubleLayerWrapperNaive(
-        _ElasticityDoubleLayerWrapperNaiveOrBiharmonic,
-        ElasticityDoubleLayerWrapperBase):
-    def __init__(self, dim, mu, nu):
-        super().__init__(dim=dim, mu=mu, nu=nu,
-                base_kernel=None)
-        ElasticityDoubleLayerWrapperBase.__init__(self, dim=dim,
-            mu=mu, nu=nu)
-
-
-class ElasticityDoubleLayerWrapperBiharmonic(
-        _ElasticityDoubleLayerWrapperNaiveOrBiharmonic,
-        ElasticityDoubleLayerWrapperBase):
-    def __init__(self, dim, mu, nu):
-        super().__init__(dim=dim, mu=mu, nu=nu,
-                base_kernel=BiharmonicKernel(dim))
-        ElasticityDoubleLayerWrapperBase.__init__(self, dim=dim,
-            mu=mu, nu=nu)
+        return make_obj_array(
+            rewrite_using_base_kernel(sym_expr, base_kernel=self.base_kernel)
+            )
 
 # }}}
 
 
-# {{{ dispatch function
+# {{{ Naive
 
-class Method(Enum):
-    """Method to use in Elasticity/Stokes problem.
+@dataclass(frozen=True)
+class ElasticityWrapperNaive(_ElasticityWrapperWithKernel):
     """
-    naive = 1
-    laplace = 2
-    biharmonic = 3
+    This method uses uses the base elasticity kernel and corresponds to
+    :attr:`RepresentationType.Naive`.
 
-
-def make_elasticity_wrapper(
-        dim: int,
-        mu: ExpressionT = _MU_SYM_DEFAULT,
-        nu: ExpressionT = _NU_SYM_DEFAULT,
-        method: Method = Method.naive) -> ElasticityWrapperBase:
-    """Creates a :class:`ElasticityWrapperBase` object depending on the input
-    values.
-
-    :param: dim: dimension
-    :param: mu: viscosity symbol, defaults to a variable named "mu"
-    :param: nu: poisson ratio symbol, defaults to a variable named "nu"
-    :param: method: method to use, defaults to the *Method* enum value naive.
-
-    :return: a :class:`ElasticityWrapperBase` object
+    .. autoattribute:: base_kernel
     """
 
-    if nu == 0.5:
-        from pytential.symbolic.stokes import StokesletWrapper
-        return StokesletWrapper(dim=dim, mu=mu, method=method)
-    if method == Method.naive:
-        return ElasticityWrapperNaive(dim=dim, mu=mu, nu=nu)
-    elif method == Method.biharmonic:
-        return ElasticityWrapperBiharmonic(dim=dim, mu=mu, nu=nu)
-    elif method == Method.laplace:
-        if nu == 0.5:
-            from pytential.symbolic.stokes import StokesletWrapperTornberg
-            return StokesletWrapperTornberg(dim=dim,
-                mu=mu, nu=nu)
-        else:
-            return ElasticityWrapperYoshida(dim=dim,
-                mu=mu, nu=nu)
-    else:
-        raise ValueError(f"invalid method: {method}."
-                "Needs to be one of naive, laplace, biharmonic")
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return None
 
 
-def make_elasticity_double_layer_wrapper(
-        dim: int,
-        mu: ExpressionT = _MU_SYM_DEFAULT,
-        nu: ExpressionT = _NU_SYM_DEFAULT,
-        method: Method = Method.naive) -> ElasticityDoubleLayerWrapperBase:
-    """Creates a :class:`ElasticityDoubleLayerWrapperBase` object depending on the
-    input values.
-
-    :param: dim: dimension
-    :param: mu: viscosity symbol, defaults to a variable named "mu"
-    :param: nu: poisson ratio symbol, defaults to a variable named "nu"
-    :param: method: method to use, defaults to the *Method* enum value naive.
-
-    :return: a :class:`ElasticityDoubleLayerWrapperBase` object
+class ElasticityDoubleLayerWrapperNaive(_ElasticityDoubleLayerWrapperWithKernel):
     """
-    if nu == 0.5:
-        from pytential.symbolic.stokes import StressletWrapper
-        return StressletWrapper(dim=dim, mu=mu, method=method)
-    if method == Method.naive:
-        return ElasticityDoubleLayerWrapperNaive(dim=dim, mu=mu,
-            nu=nu)
-    elif method == Method.biharmonic:
-        return ElasticityDoubleLayerWrapperBiharmonic(dim=dim, mu=mu,
-            nu=nu)
-    elif method == Method.laplace:
-        if nu == 0.5:
-            from pytential.symbolic.stokes import StressletWrapperTornberg
-            return StressletWrapperTornberg(dim=dim,
-                mu=mu, nu=nu)
-        else:
-            return ElasticityDoubleLayerWrapperYoshida(dim=dim,
-                mu=mu, nu=nu)
-    else:
-        raise ValueError(f"invalid method: {method}."
-                "Needs to be one of naive, laplace, biharmonic")
+    This method uses uses the base elasticity kernel and corresponds to
+    :attr:`RepresentationType.Naive`.
 
+    .. autoattribute:: base_kernel
+    """
+
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return None
+
+
+# }}}
+
+
+# {{{ Biharmonic
+
+@dataclass(frozen=True)
+class ElasticityWrapperBiharmonic(_ElasticityWrapperWithKernel):
+    """
+    This method uses uses the biharmonic kernel and corresponds to
+    :attr:`RepresentationType.Biharmonic`.
+
+    .. autoattribute:: base_kernel
+    """
+
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return BiharmonicKernel(self.dim)
+
+
+class ElasticityDoubleLayerWrapperBiharmonic(
+        _ElasticityDoubleLayerWrapperWithKernel):
+    """
+    This method uses uses the biharmonic kernel and corresponds to
+    :attr:`RepresentationType.Biharmonic`.
+
+    .. autoattribute:: base_kernel
+    """
+
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return BiharmonicKernel(self.dim)
 
 # }}}
 
 
 # {{{ Yoshida
 
-@dataclass
-class ElasticityDoubleLayerWrapperYoshida(ElasticityDoubleLayerWrapperBase):
-    r"""ElasticityDoubleLayer Wrapper using Yoshida et al's method [1] which uses
-    Laplace derivatives.
+def _apply_yoshida_single_and_double_layer(
+        slp_density_vec_sym: np.ndarray,
+        dlp_density_vec_sym: np.ndarray,
+        dir_vec_sym: np.ndarray,
+        *,
+        qbx_forced_limit: ExpansionLimitType,
+        slp_weight: float,
+        dlp_weight: float,
+        mu: ExpressionT,
+        nu: ExpressionT,
+        extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+    dim = dir_vec_sym.size
+    if dim != 3:
+        raise ValueError(f"Unsupported dimension: {dim}")
 
-    [1] Yoshida, K. I., Nishimura, N., & Kobayashi, S. (2001). Application of
-        fast multipole Galerkin boundary integral equation method to elastostatic
-        crack problems in 3D.
-        International Journal for Numerical Methods in Engineering, 50(3), 525-547.
-        `DOI <https://doi.org/10.1002/1097-0207(20010130)50:3\<525::AID-NME34\>3.0.CO;2-4>`__  # noqa
-    """
-    dim: int
-    mu: ExpressionT
-    nu: ExpressionT
+    if slp_density_vec_sym.shape != (dim,):
+        raise ValueError(f"Single-layer density is not {dim}d")
 
-    def __post_init__(self):
-        if not self.dim == 3:
-            raise ValueError("unsupported dimension given to "
-                             "ElasticityDoubleLayerWrapperYoshida: {self.dim}")
+    if dlp_density_vec_sym.shape != (dim,):
+        raise ValueError(f"Double-layer density is not {dim}d")
 
-    @cached_property
-    def laplace_kernel(self):
-        return LaplaceKernel(dim=3)
+    lame_lambda = 2 * nu * mu / (1 - 2 * nu)
+    slp_weight *= -1
 
-    def apply(self, density_vec_sym, dir_vec_sym, qbx_forced_limit,
-            extra_deriv_dirs=()):
-        return self.apply_single_and_double_layer([0]*self.dim,
-            density_vec_sym, dir_vec_sym, qbx_forced_limit, 0, 1,
-            extra_deriv_dirs)
+    def C(i: int, j: int, k: int, l: int) -> ExpressionT:   # noqa: E741
+        result: ExpressionT = 0
+        if i == j and k == l:
+            result += lame_lambda
+        if i == k and j == l:
+            result += mu
+        if i == l and j == k:
+            result += mu
+        return result * dlp_weight
 
-    def apply_single_and_double_layer(self, stokeslet_density_vec_sym,
-            stresslet_density_vec_sym, dir_vec_sym,
-            qbx_forced_limit, stokeslet_weight, stresslet_weight,
-            extra_deriv_dirs=()):
+    def add_extra_deriv_dirs(target_kernel: Kernel) -> Kernel:
+        for deriv_dir in extra_deriv_dirs:
+            target_kernel = AxisTargetDerivative(deriv_dir, target_kernel)
 
-        mu = self.mu
-        nu = self.nu
-        lam = 2*nu*mu/(1-2*nu)
-        stokeslet_weight *= -1
+        return target_kernel
 
-        def C(i, j, k, l):   # noqa: E741
-            res = 0
-            if i == j and k == l:
-                res += lam
-            if i == k and j == l:
-                res += mu
-            if i == l and j == k:
-                res += mu
-            return res * stresslet_weight
+    def P(i: int, j: int, int_g: sym.IntG) -> sym.IntG:
+        target_kernel = AxisTargetDerivative(i, int_g.target_kernel)
+        deriv_target_kernel = (
+            add_extra_deriv_dirs(TargetPointMultiplier(j, target_kernel)))
 
-        def add_extra_deriv_dirs(target_kernel):
-            for deriv_dir in extra_deriv_dirs:
-                target_kernel = AxisTargetDerivative(deriv_dir, target_kernel)
-            return target_kernel
+        result = -int_g.copy(target_kernel=deriv_target_kernel)
+        if i == j:
+            target_kernel = add_extra_deriv_dirs(int_g.target_kernel)
+            result += (3 - 4 * nu) * int_g.copy(target_kernel=target_kernel)
 
-        def P(i, j, int_g):
-            res = -int_g.copy(target_kernel=add_extra_deriv_dirs(
-                TargetPointMultiplier(j,
-                    AxisTargetDerivative(i, int_g.target_kernel))))
-            if i == j:
-                res += (3 - 4*nu)*int_g.copy(
-                    target_kernel=add_extra_deriv_dirs(int_g.target_kernel))
-            return res / (4*mu*(1 - nu))
+        return result / (4 * mu * (1 - nu))
 
-        def Q(i, int_g):
-            res = int_g.copy(target_kernel=add_extra_deriv_dirs(
-                AxisTargetDerivative(i, int_g.target_kernel)))
-            return res / (4*mu*(1 - nu))
+    def Q(i: int, int_g: sym.IntG) -> sym.IntG:
+        assert isinstance(int_g, sym.IntG)
 
-        sym_expr = np.zeros((3,), dtype=object)
+        target_kernel = add_extra_deriv_dirs(
+            AxisTargetDerivative(i, int_g.target_kernel))
 
-        kernel = self.laplace_kernel
-        source = [sym.NodeCoordinateComponent(d) for d in range(3)]
-        normal = dir_vec_sym
-        sigma = stresslet_density_vec_sym
+        res = int_g.copy(target_kernel=target_kernel)
+        return res / (4 * mu * (1 - nu))
 
-        source_kernels = [None]*4
-        for i in range(3):
-            source_kernels[i] = AxisSourceDerivative(i, kernel)
-        source_kernels[3] = kernel
+    kernel = LaplaceKernel(dim)
+    source = sym.nodes(dim).as_vector()
+    normal = dir_vec_sym
+    sigma = dlp_density_vec_sym
 
-        for i in range(3):
-            for k in range(3):
-                densities = [0]*4
-                for l in range(3):   # noqa: E741
-                    for j in range(3):
-                        for m in range(3):
-                            densities[l] += C(k, l, m, j)*normal[m]*sigma[j]
-                densities[3] += stokeslet_weight * stokeslet_density_vec_sym[k]
-                int_g = sym.IntG(target_kernel=kernel,
-                    source_kernels=tuple(source_kernels),
-                    densities=tuple(densities),
-                    qbx_forced_limit=qbx_forced_limit)
-                sym_expr[i] += P(i, k, int_g)
+    source_kernels = [None] * (dim + 1)
+    for i in range(dim):
+        source_kernels[i] = AxisSourceDerivative(i, kernel)
+    source_kernels[dim] = kernel
 
-            densities = [0]*4
-            for k in range(3):
-                for m in range(3):
-                    for j in range(3):
-                        for l in range(3):   # noqa: E741
-                            densities[l] += \
-                                    C(k, l, m, j)*normal[m]*sigma[j]*source[k]
-                            if k == l:
-                                densities[3] += \
-                                        C(k, l, m, j)*normal[m]*sigma[j]
-                densities[3] += stokeslet_weight * source[k] \
-                        * stokeslet_density_vec_sym[k]
-            int_g = sym.IntG(target_kernel=kernel,
+    from itertools import product
+
+    sym_expr: np.ndarray = np.zeros(dim, dtype=object)
+    for i in range(dim):
+        for k in range(dim):
+            densities = [0] * (dim + 1)
+            for l, j, m in product(range(dim), repeat=3):  # noqa: E741
+                densities[l] += C(k, l, m, j)*normal[m]*sigma[j]
+            densities[dim] += slp_weight * slp_density_vec_sym[k]
+
+            int_g = sym.IntG(
+                target_kernel=kernel,
                 source_kernels=tuple(source_kernels),
                 densities=tuple(densities),
                 qbx_forced_limit=qbx_forced_limit)
-            sym_expr[i] += Q(i, int_g)
+            sym_expr[i] += P(i, k, int_g)
 
-        return sym_expr
+        densities = [0] * (dim + 1)
+        for k in range(dim):
+            for m, j, l in product(range(dim), repeat=3):   # noqa: E741
+                densities[l] += C(k, l, m, j) * normal[m] * sigma[j] * source[k]
+                if k == l:
+                    densities[dim] += C(k, l, m, j) * normal[m] * sigma[j]
+
+            densities[dim] += slp_weight * source[k] * slp_density_vec_sym[k]
+
+        int_g = sym.IntG(
+            target_kernel=kernel,
+            source_kernels=tuple(source_kernels),
+            densities=tuple(densities),
+            qbx_forced_limit=qbx_forced_limit)
+        sym_expr[i] += Q(i, int_g)
+
+    return sym_expr
 
 
-@dataclass
+@dataclass(frozen=True)
 class ElasticityWrapperYoshida(ElasticityWrapperBase):
-    r"""Elasticity single layer using Yoshida et al's method [1] which uses Laplace
-    derivatives.
+    r"""Elasticity single-layer using Yoshida et al's method [Yoshida2001]_.
 
-    [1] Yoshida, K. I., Nishimura, N., & Kobayashi, S. (2001). Application of
-        fast multipole Galerkin boundary integral equation method to elastostatic
-        crack problems in 3D.
-        International Journal for Numerical Methods in Engineering, 50(3), 525-547.
-        `DOI <https://doi.org/10.1002/1097-0207(20010130)50:3\<525::AID-NME34\>3.0.CO;2-4>`__  # noqa
-    """
-    dim: int
-    mu: ExpressionT
-    nu: ExpressionT
+    This method uses uses Laplace derivatives and corresponds to
+    :attr:`RepresentationType.Laplace`.
+
+    .. [Yoshida2001] K.-I. Yoshida, N. Nishimura, S. Kobayashi,
+        *Application of Fast Multipole Galerkin Boundary Integral Equation
+        Method to Elastostatic Crack Problems in 3D*,
+        International Journal for Numerical Methods in Engineering, Vol. 50,
+        pp. 525--547, 2001,
+        `DOI <https://doi.org/10.1002/1097-0207(20010130)50:3%3C525::aid-nme34%3E3.0.co;2-4>`__.
+    """  # noqa: E501
 
     def __post_init__(self):
-        if not self.dim == 3:
-            raise ValueError("unsupported dimension given to "
-                             f"ElasticityDoubleLayerWrapperYoshida: {self.dim}")
+        if self.dim != 3:
+            raise ValueError(
+                f"Unsupported dimension for '{type(self).__name__}': {self.dim}")
 
-    @cached_property
-    def stresslet(self):
-        return ElasticityDoubleLayerWrapperYoshida(3, self.mu, self.nu)
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        slp_density_vec_sym = density_vec_sym
+        dlp_density_vec_sym = np.zeros(self.dim)
+        dir_vec_sym = np.zeros(self.dim)
 
-    def apply(self, density_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
-        return self.stresslet.apply_single_and_double_layer(density_vec_sym,
-            [0]*self.dim, [0]*self.dim, qbx_forced_limit, 1, 0,
-            extra_deriv_dirs)
+        return _apply_yoshida_single_and_double_layer(
+            slp_density_vec_sym,
+            dlp_density_vec_sym,
+            dir_vec_sym,
+            qbx_forced_limit=qbx_forced_limit,
+            slp_weight=1,
+            dlp_weight=0,
+            mu=self.mu,
+            nu=self.nu,
+            extra_deriv_dirs=extra_deriv_dirs)
+
+
+@dataclass(frozen=True)
+class ElasticityDoubleLayerWrapperYoshida(ElasticityDoubleLayerWrapperBase):
+    r"""Elasticity double-layer using Yoshida et al's method [Yoshida2001]_.
+
+    This method uses uses Laplace derivatives and corresponds to
+    :attr:`RepresentationType.Laplace`.
+    """
+
+    def __post_init__(self):
+        if self.dim != 3:
+            raise ValueError(
+                f"Unsupported dimension for '{type(self).__name__}': {self.dim}")
+
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              dir_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        slp_density_vec_sym = np.zeros(self.dim)
+        dlp_density_vec_sym = density_vec_sym
+
+        return _apply_yoshida_single_and_double_layer(
+            slp_density_vec_sym,
+            dlp_density_vec_sym,
+            dir_vec_sym,
+            qbx_forced_limit=qbx_forced_limit,
+            slp_weight=0,
+            dlp_weight=1,
+            mu=self.mu,
+            nu=self.nu,
+            extra_deriv_dirs=extra_deriv_dirs)
+
 
 # }}}

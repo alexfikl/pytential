@@ -23,28 +23,31 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from abc import abstractmethod
+from dataclasses import dataclass
+from typing import Optional, Tuple, Union
+
 import numpy as np
 
+from sumpy.kernel import (
+    AxisSourceDerivative, AxisTargetDerivative, BiharmonicKernel, Kernel,
+    LaplaceKernel, TargetPointMultiplier)
+from sumpy.symbolic import SpatialConstant
+
 from pytential import sym
+from pytential.symbolic.elasticity import (
+    ElasticityDoubleLayerWrapperBase, ElasticityWrapperBase, RepresentationType,
+    _ElasticityDoubleLayerWrapperWithKernel, _ElasticityWrapperWithKernel)
 from pytential.symbolic.pde.system_utils import rewrite_using_base_kernel
-from sumpy.kernel import (LaplaceKernel, BiharmonicKernel,
-    AxisTargetDerivative, AxisSourceDerivative, TargetPointMultiplier)
-from pytential.symbolic.elasticity import (ElasticityWrapperBase,
-    ElasticityDoubleLayerWrapperBase,
-    _ElasticityWrapperNaiveOrBiharmonic,
-    _ElasticityDoubleLayerWrapperNaiveOrBiharmonic,
-    Method, _MU_SYM_DEFAULT)
-from pytential.symbolic.typing import ExpressionT
-from dataclasses import dataclass
-from functools import cached_property
-from abc import abstractmethod
+from pytential.symbolic.typing import ExpansionLimitType, ExpressionT
+
 
 __doc__ = """
+.. automethod:: make_stokeslet_wrapper
+.. automethod:: make_stresslet_wrapper
 
 .. autoclass:: StokesletWrapperBase
 .. autoclass:: StressletWrapperBase
-.. automethod:: pytential.symbolic.stokes.StokesletWrapper
-.. automethod:: pytential.symbolic.stokes.StressletWrapper
 
 .. autoclass:: StokesOperator
 .. autoclass:: HsiaoKressExteriorStokesOperator
@@ -52,41 +55,120 @@ __doc__ = """
 """
 
 
-# {{{ StokesletWrapper/StressletWrapper base classes
+# {{{ entrypoints
 
+def make_stokeslet_wrapper(
+        dim: int,
+        mu: Union[ExpressionT, str] = "mu",
+        repr_type: RepresentationType = RepresentationType.Naive,
+        ) -> "StokesletWrapperBase":
+    """Creates a :class:`StokesletWrapperBase` object for the given inputs.
+
+    :param repr_type: representation to use in the elasticity kernel.
+    :return: an appropriate :class:`StokesletWrapperBase` for the given dimension
+        or parameters.
+    """
+    if not isinstance(repr_type, RepresentationType):
+        raise TypeError("'repr_type' must be a 'RepresentationType' enum value")
+
+    if isinstance(mu, str):
+        mu = SpatialConstant(mu)
+
+    if repr_type == RepresentationType.Naive:
+        return StokesletWrapperNaive(dim=dim, mu=mu)
+    elif repr_type == RepresentationType.Biharmonic:
+        return StokesletWrapperBiharmonic(dim=dim, mu=mu)
+    elif repr_type == RepresentationType.Laplace:
+        return StokesletWrapperTornberg(dim=dim, mu=mu)
+    else:
+        raise AssertionError()
+
+
+def make_stresslet_wrapper(
+        dim: int,
+        mu: Union[ExpressionT, str] = "mu",
+        repr_type: RepresentationType = RepresentationType.Naive
+        ) -> "StressletWrapperBase":
+    """Creates a :class:`StressletWrapperBase` object for the given inputs.
+
+    :param repr_type: representation to use in the elasticity kernel.
+    :return: an appropriate :class:`StressletWrapperBase` for the given dimension
+        or parameters.
+    """
+    if not isinstance(repr_type, RepresentationType):
+        raise TypeError("'repr_type' must be a 'RepresentationType' enum value")
+
+    if isinstance(mu, str):
+        mu = SpatialConstant(mu)
+
+    if repr_type == RepresentationType.Naive:
+        return StressletWrapperNaive(dim=dim, mu=mu)
+    elif repr_type == RepresentationType.Biharmonic:
+        return StressletWrapperBiharmonic(dim=dim, mu=mu)
+    elif repr_type == RepresentationType.Laplace:
+        return StressletWrapperTornberg(dim=dim, mu=mu)
+    else:
+        raise AssertionError()
+
+# }}}
+
+
+# {{{ ABCs
+
+def _stokeslet_apply_pressure(
+        density_vec_sym: np.ndarray,
+        qbx_forced_limit: ExpansionLimitType,
+        extra_deriv_dirs: Tuple[int, ...] = ()) -> ExpressionT:
+    dim = density_vec_sym.size
+
+    # Pressure representation doesn't differ depending on the implementation
+    # and is implemented in base class here.
+    lknl = LaplaceKernel(dim=dim)
+
+    sym_expr: ExpressionT = 0
+    for i in range(dim):
+        deriv_dirs = tuple(extra_deriv_dirs) + (i,)
+        knl = lknl
+        for deriv_dir in deriv_dirs:
+            knl = AxisTargetDerivative(deriv_dir, knl)
+        sym_expr += sym.int_g_vec(knl, density_vec_sym[i],
+                                  qbx_forced_limit=qbx_forced_limit)
+
+    return sym_expr
+
+
+@dataclass(frozen=True, init=False)
 class StokesletWrapperBase(ElasticityWrapperBase):
     """Wrapper class for the :class:`~sumpy.kernel.StokesletKernel` kernel.
 
     In addition to the methods in
-    :class:`pytential.symbolic.elasticity.ElasticityWrapperBase`, this class
+    :class:`~pytential.symbolic.elasticity.ElasticityWrapperBase`, this class
     also provides :meth:`apply_stress` which applies symmetric viscous stress tensor
     in the requested direction and :meth:`apply_pressure`.
 
     .. automethod:: apply
-    .. automethod:: apply_pressure
     .. automethod:: apply_derivative
+    .. automethod:: apply_pressure
     .. automethod:: apply_stress
     """
-    def __init__(self, dim, mu):
+
+    def __init__(self, dim: int, mu: ExpressionT) -> None:
         super().__init__(dim=dim, mu=mu, nu=0.5)
 
-    def apply_pressure(self, density_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
+    def apply_pressure(self,
+                       density_vec_sym: np.ndarray,
+                       qbx_forced_limit: ExpansionLimitType,
+                       extra_deriv_dirs: Tuple[int, ...] = ()) -> ExpressionT:
         """Symbolic expression for pressure field associated with the Stokeslet."""
-        # Pressure representation doesn't differ depending on the implementation
-        # and is implemented in base class here.
-        lknl = LaplaceKernel(dim=self.dim)
+        return _stokeslet_apply_pressure(
+            density_vec_sym,
+            qbx_forced_limit=qbx_forced_limit,
+            extra_deriv_dirs=extra_deriv_dirs)
 
-        sym_expr = 0
-        for i in range(self.dim):
-            deriv_dirs = tuple(extra_deriv_dirs) + (i,)
-            knl = lknl
-            for deriv_dir in deriv_dirs:
-                knl = AxisTargetDerivative(deriv_dir, knl)
-            sym_expr += sym.int_g_vec(knl, density_vec_sym[i],
-                                      qbx_forced_limit=qbx_forced_limit)
-        return sym_expr
-
-    def apply_stress(self, density_vec_sym, dir_vec_sym, qbx_forced_limit):
+    def apply_stress(self,
+                     density_vec_sym: np.ndarray,
+                     dir_vec_sym: np.ndarray,
+                     qbx_forced_limit: ExpansionLimitType) -> np.ndarray:
         r"""Symbolic expression for viscous stress applied to a direction.
 
         Returns a vector of symbolic expressions for the force resulting
@@ -109,9 +191,37 @@ class StokesletWrapperBase(ElasticityWrapperBase):
         :arg qbx_forced_limit: the *qbx_forced_limit* argument to be passed on
             to :class:`~pytential.symbolic.primitives.IntG`.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"'{type(self).__name__}' does not implement apply_stress")
 
 
+def _stresslet_apply_pressure(density_vec_sym: np.ndarray,
+                              dir_vec_sym: np.ndarray,
+                              qbx_forced_limit: ExpansionLimitType,
+                              mu: ExpressionT,
+                              extra_deriv_dirs: Tuple[int, ...] = ()) -> ExpressionT:
+    dim = density_vec_sym.dim
+    if dir_vec_sym.shape != (dim,):
+        raise ValueError(f"Direction vector is not {dim}d")
+
+    from itertools import product
+
+    lknl = LaplaceKernel(dim=dim)
+    sym_expr: ExpressionT = 0
+
+    for i, j in product(range(dim), repeat=2):
+        deriv_dirs = tuple(extra_deriv_dirs) + (i, j)
+        knl = lknl
+        for deriv_dir in deriv_dirs:
+            knl = AxisTargetDerivative(deriv_dir, knl)
+        sym_expr += 2.0 * mu * sym.int_g_vec(knl,
+                                             density_vec_sym[i] * dir_vec_sym[j],
+                                             qbx_forced_limit=qbx_forced_limit)
+
+    return sym_expr
+
+
+@dataclass(frozen=True, init=False)
 class StressletWrapperBase(ElasticityDoubleLayerWrapperBase):
     """Wrapper class for the :class:`~sumpy.kernel.StressletKernel` kernel.
 
@@ -121,40 +231,33 @@ class StressletWrapperBase(ElasticityDoubleLayerWrapperBase):
     tensor in the requested direction and :meth:`apply_pressure`.
 
     .. automethod:: apply
-    .. automethod:: apply_pressure
     .. automethod:: apply_derivative
+    .. automethod:: apply_pressure
     .. automethod:: apply_stress
     """
-    def __init__(self, dim, mu):
+
+    def __init__(self, dim: int, mu: ExpressionT) -> None:
         super().__init__(dim=dim, mu=mu, nu=0.5)
 
-    def apply_pressure(self, density_vec_sym, dir_vec_sym, qbx_forced_limit,
-                       extra_deriv_dirs=()):
+    def apply_pressure(self,
+                       density_vec_sym: np.ndarray,
+                       dir_vec_sym: np.ndarray,
+                       qbx_forced_limit: ExpansionLimitType,
+                       extra_deriv_dirs: Tuple[int, ...] = ()) -> ExpressionT:
         """Symbolic expression for pressure field associated with the Stresslet.
         """
-        # Pressure representation doesn't differ depending on the implementation
-        # and is implemented in base class here.
+        return _stresslet_apply_pressure(
+            density_vec_sym,
+            dir_vec_sym,
+            mu=self.mu,
+            qbx_forced_limit=qbx_forced_limit,
+            extra_deriv_dirs=extra_deriv_dirs)
 
-        import itertools
-        lknl = LaplaceKernel(dim=self.dim)
-
-        factor = (2. * self.mu)
-
-        sym_expr = 0
-
-        for i, j in itertools.product(range(self.dim), range(self.dim)):
-            deriv_dirs = tuple(extra_deriv_dirs) + (i, j)
-            knl = lknl
-            for deriv_dir in deriv_dirs:
-                knl = AxisTargetDerivative(deriv_dir, knl)
-            sym_expr += factor * sym.int_g_vec(knl,
-                                             density_vec_sym[i] * dir_vec_sym[j],
-                                             qbx_forced_limit=qbx_forced_limit)
-
-        return sym_expr
-
-    def apply_stress(self, density_vec_sym, normal_vec_sym, dir_vec_sym,
-                        qbx_forced_limit):
+    def apply_stress(self,
+                     density_vec_sym: np.ndarray,
+                     normal_vec_sym: np.ndarray,
+                     dir_vec_sym: np.ndarray,
+                     qbx_forced_limit: ExpansionLimitType) -> np.ndarray:
         r"""Symbolic expression for viscous stress applied to a direction.
 
         Returns a vector of symbolic expressions for the force resulting
@@ -173,55 +276,83 @@ class StressletWrapperBase(ElasticityDoubleLayerWrapperBase):
         :arg qbx_forced_limit: the *qbx_forced_limit* argument to be passed on
             to :class:`~pytential.symbolic.primitives.IntG`.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            f"'{type(self).__name__}' does not implement apply_stress")
 
 # }}}
 
 
 # {{{ Stokeslet/StressletWrapper Naive and Biharmonic
 
-class _StokesletWrapperNaiveOrBiharmonic(_ElasticityWrapperNaiveOrBiharmonic,
-                                         StokesletWrapperBase):
+@dataclass(frozen=True, init=False)
+class _StokesletWrapperWithKernel(_ElasticityWrapperWithKernel):
+    def __init__(self, dim: int, mu: ExpressionT) -> None:
+        super().__init__(dim=dim, mu=mu, nu=0.5)
 
-    def apply_pressure(self, density_vec_sym, qbx_forced_limit,
-            extra_deriv_dirs=()):
-        sym_expr = super().apply_pressure(density_vec_sym, qbx_forced_limit,
-                                          extra_deriv_dirs=extra_deriv_dirs)
+    @property
+    @abstractmethod
+    def stresslet_obj(self) -> "_StressletWrapperWithKernel":
+        pass
+
+    def apply_pressure(self,
+                       density_vec_sym: np.ndarray,
+                       qbx_forced_limit: ExpansionLimitType,
+                       extra_deriv_dirs: Tuple[int, ...] = ()) -> ExpressionT:
+        sym_expr = _stokeslet_apply_pressure(
+            density_vec_sym,
+            qbx_forced_limit=qbx_forced_limit,
+            extra_deriv_dirs=extra_deriv_dirs)
+
         res, = rewrite_using_base_kernel([sym_expr], base_kernel=self.base_kernel)
         return res
 
-    def apply_stress(self, density_vec_sym, dir_vec_sym, qbx_forced_limit):
+    def apply_stress(self,
+                     density_vec_sym: np.ndarray,
+                     dir_vec_sym: np.ndarray,
+                     qbx_forced_limit: ExpansionLimitType) -> np.ndarray:
+        sym_expr: np.ndarray = np.zeros((self.dim,), dtype=object)
+        stresslet_obj = self.stresslet_obj
 
-        sym_expr = np.zeros((self.dim,), dtype=object)
-        stresslet_obj = _StressletWrapperNaiveOrBiharmonic(dim=self.dim,
-            mu=self.mu, nu=0.5, base_kernel=self.base_kernel)
-
-        # For stokeslet, there's no direction vector involved
-        # passing a list of ones instead to remove its usage.
         for comp in range(self.dim):
             for i in range(self.dim):
                 for j in range(self.dim):
-                    sym_expr[comp] += dir_vec_sym[i] * \
-                        stresslet_obj._get_int_g((comp, i, j),
-                        density_vec_sym[j], [1]*self.dim,
-                        qbx_forced_limit, deriv_dirs=[])
+                    int_g = _make_int_g(
+                        stresslet_obj.kernel_dict[comp, i, j],
+                        density_vec_sym[j],
+                        qbx_forced_limit=qbx_forced_limit,
+                        mu=self.mu,
+                        nu=self.nu)
+
+                    sym_expr[comp] += dir_vec_sym[i] * int_g
 
         return sym_expr
 
 
-class _StressletWrapperNaiveOrBiharmonic(
-        _ElasticityDoubleLayerWrapperNaiveOrBiharmonic,
-        StressletWrapperBase):
-    def apply_pressure(self, density_vec_sym, dir_vec_sym, qbx_forced_limit,
-            extra_deriv_dirs=()):
-        sym_expr = super().apply_pressure(density_vec_sym, dir_vec_sym,
-            qbx_forced_limit, extra_deriv_dirs=extra_deriv_dirs)
+@dataclass(frozen=True, init=False)
+class _StressletWrapperWithKernel(_ElasticityDoubleLayerWrapperWithKernel):
+    def __init__(self, dim: int, mu: ExpressionT) -> None:
+        super().__init__(dim=dim, mu=mu, nu=0.5)
+
+    def apply_pressure(self,
+                       density_vec_sym: np.ndarray,
+                       dir_vec_sym: np.ndarray,
+                       qbx_forced_limit: ExpansionLimitType,
+                       extra_deriv_dirs: Tuple[int, ...] = ()) -> ExpressionT:
+        sym_expr = _stresslet_apply_pressure(
+            density_vec_sym,
+            dir_vec_sym,
+            mu=self.mu,
+            qbx_forced_limit=qbx_forced_limit,
+            extra_deriv_dirs=extra_deriv_dirs)
+
         res, = rewrite_using_base_kernel([sym_expr], base_kernel=self.base_kernel)
         return res
 
-    def apply_stress(self, density_vec_sym, normal_vec_sym, dir_vec_sym,
-                        qbx_forced_limit):
-
+    def apply_stress(self,
+                     density_vec_sym: np.ndarray,
+                     normal_vec_sym: np.ndarray,
+                     dir_vec_sym: np.ndarray,
+                     qbx_forced_limit: ExpansionLimitType) -> np.ndarray:
         sym_expr = np.empty((self.dim,), dtype=object)
 
         # Build velocity derivative matrix
@@ -246,232 +377,234 @@ class _StressletWrapperNaiveOrBiharmonic(
                                         )
         return sym_expr
 
-
-class StokesletWrapperNaive(_StokesletWrapperNaiveOrBiharmonic,
-                            ElasticityWrapperBase):
-    def __init__(self, dim, mu):
-        super().__init__(dim=dim, mu=mu, nu=0.5, base_kernel=None)
-        ElasticityWrapperBase.__init__(self, dim=dim, mu=mu, nu=0.5)
+# }}}
 
 
-class StressletWrapperNaive(_StressletWrapperNaiveOrBiharmonic,
-                            ElasticityDoubleLayerWrapperBase):
+# {{{ Naive
 
-    def __init__(self, dim, mu):
-        super().__init__(dim=dim, mu=mu, nu=0.5, base_kernel=None)
-        ElasticityDoubleLayerWrapperBase.__init__(self, dim=dim, mu=mu,
-                                                  nu=0.5)
+@dataclass(frozen=True, init=False)
+class StokesletWrapperNaive(_StokesletWrapperWithKernel):
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return None
 
-
-class StokesletWrapperBiharmonic(_StokesletWrapperNaiveOrBiharmonic,
-                            ElasticityWrapperBase):
-    def __init__(self, dim, mu):
-        super().__init__(dim=dim, mu=mu, nu=0.5,
-                         base_kernel=BiharmonicKernel(dim))
-        ElasticityWrapperBase.__init__(self, dim=dim, mu=mu, nu=0.5)
+    @property
+    def stresslet_obj(self) -> "StressletWrapperNaive":
+        return StressletWrapperNaive(dim=self.dim, mu=self.mu)
 
 
-class StressletWrapperBiharmonic(_StressletWrapperNaiveOrBiharmonic,
-                            ElasticityDoubleLayerWrapperBase):
-    def __init__(self, dim, mu):
-        super().__init__(dim=dim, mu=mu, nu=0.5,
-                         base_kernel=BiharmonicKernel(dim))
-        ElasticityDoubleLayerWrapperBase.__init__(self, dim=dim, mu=mu,
-                                                  nu=0.5)
+@dataclass(frozen=True, init=False)
+class StressletWrapperNaive(_StressletWrapperWithKernel):
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return None
+
+
+StokesletWrapperBase.register(StokesletWrapperNaive)
+StressletWrapperBase.register(StressletWrapperNaive)
 
 # }}}
 
 
-# {{{ Stokeslet/Stresslet using Laplace (Tornberg)
+# {{{ Biharmonic
 
-@dataclass
+@dataclass(frozen=True, init=False)
+class StokesletWrapperBiharmonic(_StokesletWrapperWithKernel):
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return BiharmonicKernel(self.dim)
+
+    @property
+    def stresslet_obj(self) -> "StressletWrapperBiharmonic":
+        return StressletWrapperBiharmonic(dim=self.dim, mu=self.mu)
+
+
+@dataclass(frozen=True, init=False)
+class StressletWrapperBiharmonic(_StressletWrapperWithKernel):
+    @property
+    def base_kernel(self) -> Optional[Kernel]:
+        return BiharmonicKernel(self.dim)
+
+
+StokesletWrapperBase.register(StokesletWrapperBiharmonic)
+StressletWrapperBase.register(StressletWrapperBiharmonic)
+
+# }}}
+
+
+# {{{ Tornberg
+
+def _make_int_g(
+        target_kernel: Kernel,
+        source_kernels: Tuple[Kernel, ...],
+        densities: Tuple[ExpressionT],
+        qbx_forced_limit: ExpansionLimitType) -> ExpressionT:
+    if len(source_kernels) != len(densities):
+        raise ValueError(
+            f"'source_kernels' have length '{len(source_kernels)}' and "
+            f"'densities' have length '{len(densities)}'")
+
+    new_densities = tuple([density for density in densities if density != 0])
+    if not new_densities:
+        return 0
+
+    return sym.IntG(
+        target_kernel=target_kernel,
+        source_kernels=tuple([
+            kernel for kernel, d in zip(source_kernels, densities) if d != 0
+            ]),
+        densities=new_densities,
+        qbx_forced_limit=qbx_forced_limit)
+
+
+def _apply_tornberg_single_and_double_layer(
+        stokeslet_density_vec_sym: np.ndarray,
+        stresslet_density_vec_sym: np.ndarray,
+        dir_vec_sym: np.ndarray,
+        *,
+        qbx_forced_limit: ExpansionLimitType,
+        stokeslet_weight: float,
+        stresslet_weight: float,
+        mu: ExpressionT,
+        extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+    dim, = dir_vec_sym.shape
+    if stokeslet_density_vec_sym.shape != (dim,):
+        raise ValueError(f"Single-layer density is not {dim}d")
+
+    if stresslet_density_vec_sym.shape != (dim,):
+        raise ValueError(f"Double-layer density is not {dim}d")
+
+    sym_expr = np.zeros((dim,), dtype=object)
+    source = sym.nodes(dim).as_vector()
+
+    # The paper in [1] ignores the scaling we use in the Stokeslet/Stresslet
+    # and gives formulae for the kernel expression only
+    # stokeslet_weight = StokesletKernel.global_scaling_const /
+    #    LaplaceKernel.global_scaling_const
+    # stresslet_weight = StressletKernel.global_scaling_const /
+    #    LaplaceKernel.global_scaling_const
+    stresslet_weight *= 3.0
+    stokeslet_weight *= -0.5*mu**(-1)
+
+    laplace_kernel = LaplaceKernel(dim=dim)
+    common_source_kernels = tuple([
+        AxisSourceDerivative(k, laplace_kernel) for k in range(dim)
+        ] + [laplace_kernel])
+
+    for i in range(dim):
+        for j in range(dim):
+            densities = tuple([
+                (stresslet_weight / 6.0) * (
+                    stresslet_density_vec_sym[k] * dir_vec_sym[j]
+                    + stresslet_density_vec_sym[j] * dir_vec_sym[k])
+                for k in range(dim)
+                ] + [stokeslet_weight * stokeslet_density_vec_sym[j]])
+
+            target_kernel = (
+                TargetPointMultiplier(j, AxisTargetDerivative(i, laplace_kernel)))
+            for deriv_dir in extra_deriv_dirs:
+                target_kernel = AxisTargetDerivative(deriv_dir, target_kernel)
+
+            sym_expr[i] -= _make_int_g(
+                target_kernel=target_kernel,
+                source_kernels=common_source_kernels,
+                densities=densities,
+                qbx_forced_limit=qbx_forced_limit)
+
+            if i == j:
+                target_kernel = laplace_kernel
+                for deriv_dir in extra_deriv_dirs:
+                    target_kernel = AxisTargetDerivative(deriv_dir, target_kernel)
+
+                sym_expr[i] += _make_int_g(
+                    target_kernel=target_kernel,
+                    source_kernels=common_source_kernels,
+                    densities=densities,
+                    qbx_forced_limit=qbx_forced_limit)
+
+        common_density0 = sum(
+            source[k] * stresslet_density_vec_sym[k] for k in range(dim))
+        common_density1 = sum(
+            source[k] * dir_vec_sym[k] for k in range(dim))
+        common_density2 = sum(
+            source[k] * stokeslet_density_vec_sym[k] for k in range(dim))
+        densities = tuple([
+            (stresslet_weight / 6.0) * (
+                common_density0 * dir_vec_sym[k]
+                + common_density1 * stresslet_density_vec_sym[k])
+            for k in range(dim)
+            ] + [stokeslet_weight * common_density2])
+
+        target_kernel = AxisTargetDerivative(i, laplace_kernel)
+        for deriv_dir in extra_deriv_dirs:
+            target_kernel = AxisTargetDerivative(deriv_dir, target_kernel)
+
+        sym_expr[i] += _make_int_g(
+            target_kernel=target_kernel,
+            source_kernels=common_source_kernels,
+            densities=densities,
+            qbx_forced_limit=qbx_forced_limit)
+
+    return sym_expr
+
+
+@dataclass(frozen=True, init=False)
 class StokesletWrapperTornberg(StokesletWrapperBase):
-    """A Stresslet wrapper using Tornberg and Greengard's method which
-    uses Laplace derivatives.
+    """A Stokeslet wrapper using Tornberg and Greengard method [Tornberg2008]_.
 
-    [1] Tornberg, A. K., & Greengard, L. (2008). A fast multipole method for the
-        three-dimensional Stokes equations.
-        Journal of Computational Physics, 227(3), 1613-1619.
+    This method uses uses Laplace derivatives and corresponds to
+    :attr:`~pytential.symbolic.elasticity.RepresentationType.Laplace`.
+
+    .. [Tornberg2008] A.-K. Tornberg, L. Greengard,
+        *A Fast Multipole Method for the Three-Dimensional Stokes Equations*,
+        Journal of Computational Physics, Vol. 227, pp. 1613--1619, 2008,
+        `DOI <https://doi.org/10.1016/j.jcp.2007.06.029>`__.
     """
-    dim: int
-    mu: ExpressionT
-    nu: ExpressionT
 
-    def __post_init__(self):
-        if self.nu != 0.5:
-            raise ValueError("nu != 0.5 is not supported")
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        stokeslet_density_vec_sym = density_vec_sym
+        stresslet_density_vec_sym = np.zeros(self.dim)
+        dir_vec_sym = np.zeros(self.dim)
 
-    def apply(self, density_vec_sym, qbx_forced_limit, extra_deriv_dirs=()):
-        stresslet = StressletWrapperTornberg(self.dim, self.mu, self.nu)
-        return stresslet.apply_single_and_double_layer(density_vec_sym,
-            [0]*self.dim, [0]*self.dim,
+        return _apply_tornberg_single_and_double_layer(
+            stokeslet_density_vec_sym,
+            stresslet_density_vec_sym,
+            dir_vec_sym,
             qbx_forced_limit=qbx_forced_limit,
             stokeslet_weight=1,
             stresslet_weight=0,
+            mu=self.mu,
             extra_deriv_dirs=extra_deriv_dirs)
 
 
-@dataclass
+@dataclass(frozen=True, init=False)
 class StressletWrapperTornberg(StressletWrapperBase):
-    """A Stresslet wrapper using Tornberg and Greengard's method which
-    uses Laplace derivatives.
+    """A Stresslet wrapper using Tornberg and Greengard's method [Tornberg2008]_.
 
-    [1] Tornberg, A. K., & Greengard, L. (2008). A fast multipole method for the
-        three-dimensional Stokes equations.
-        Journal of Computational Physics, 227(3), 1613-1619.
+    This method uses uses Laplace derivatives and corresponds to
+    :attr:`~pytential.symbolic.elasticity.RepresentationType.Laplace`.
     """
-    dim: int
-    mu: ExpressionT
-    nu: ExpressionT
 
-    def __post_init__(self):
-        if self.nu != 0.5:
-            raise ValueError("nu != 0.5 is not supported")
+    def apply(self,
+              density_vec_sym: np.ndarray,
+              dir_vec_sym: np.ndarray,
+              qbx_forced_limit: ExpansionLimitType,
+              extra_deriv_dirs: Tuple[int, ...] = ()) -> np.ndarray:
+        stokeslet_density_vec_sym = np.zeros(self.dim)
+        stresslet_density_vec_sym = density_vec_sym
 
-    @cached_property
-    def laplace_kernel(self):
-        return LaplaceKernel(dim=self.dim)
-
-    def apply(self, density_vec_sym, dir_vec_sym, qbx_forced_limit,
-            extra_deriv_dirs=()):
-        return self.apply_single_and_double_layer([0]*self.dim,
-            density_vec_sym, dir_vec_sym,
+        return _apply_tornberg_single_and_double_layer(
+            stokeslet_density_vec_sym,
+            stresslet_density_vec_sym,
+            dir_vec_sym,
             qbx_forced_limit=qbx_forced_limit,
             stokeslet_weight=0,
             stresslet_weight=1,
+            mu=self.mu,
             extra_deriv_dirs=extra_deriv_dirs)
-
-    def _create_int_g(self, target_kernel, source_kernels, densities,
-                      qbx_forced_limit):
-        new_source_kernels = []
-        new_densities = []
-        for source_kernel, density in zip(source_kernels, densities):
-            if density != 0.0:
-                new_source_kernels.append(source_kernel)
-                new_densities.append(density)
-        if not new_densities:
-            return 0
-        return sym.IntG(target_kernel=target_kernel,
-            source_kernels=tuple(new_source_kernels),
-            densities=tuple(new_densities),
-            qbx_forced_limit=qbx_forced_limit)
-
-    def apply_single_and_double_layer(self, stokeslet_density_vec_sym,
-            stresslet_density_vec_sym, dir_vec_sym,
-            qbx_forced_limit, stokeslet_weight, stresslet_weight,
-            extra_deriv_dirs=()):
-
-        sym_expr = np.zeros((self.dim,), dtype=object)
-
-        source = sym.nodes(self.dim).as_vector()
-
-        # The paper in [1] ignores the scaling we use Stokeslet/Stresslet
-        # and gives formulae for the kernel expression only
-        # stokeslet_weight = StokesletKernel.global_scaling_const /
-        #    LaplaceKernel.global_scaling_const
-        # stresslet_weight = StressletKernel.global_scaling_const /
-        #    LaplaceKernel.global_scaling_const
-        stresslet_weight *= 3.0
-        stokeslet_weight *= -0.5*self.mu**(-1)
-
-        common_source_kernels = [
-                AxisSourceDerivative(k, self.laplace_kernel) for
-                k in range(self.dim)]
-        common_source_kernels.append(self.laplace_kernel)
-
-        for i in range(self.dim):
-            for j in range(self.dim):
-                densities = [(stresslet_weight/6.0)*(
-                    stresslet_density_vec_sym[k] * dir_vec_sym[j]
-                    + stresslet_density_vec_sym[j] * dir_vec_sym[k])
-                            for k in range(self.dim)]
-                densities.append(stokeslet_weight*stokeslet_density_vec_sym[j])
-                target_kernel = TargetPointMultiplier(j,
-                        AxisTargetDerivative(i, self.laplace_kernel))
-                for deriv_dir in extra_deriv_dirs:
-                    target_kernel = AxisTargetDerivative(deriv_dir, target_kernel)
-                sym_expr[i] -= self._create_int_g(target_kernel=target_kernel,
-                    source_kernels=tuple(common_source_kernels),
-                    densities=tuple(densities),
-                    qbx_forced_limit=qbx_forced_limit)
-
-                if i == j:
-                    target_kernel = self.laplace_kernel
-                    for deriv_dir in extra_deriv_dirs:
-                        target_kernel = AxisTargetDerivative(
-                                deriv_dir, target_kernel)
-
-                    sym_expr[i] += self._create_int_g(target_kernel=target_kernel,
-                        source_kernels=common_source_kernels,
-                        densities=densities,
-                        qbx_forced_limit=qbx_forced_limit)
-
-            common_density0 = sum(source[k] * stresslet_density_vec_sym[k] for
-                    k in range(self.dim))
-            common_density1 = sum(source[k] * dir_vec_sym[k] for
-                    k in range(self.dim))
-            common_density2 = sum(source[k] * stokeslet_density_vec_sym[k] for
-                    k in range(self.dim))
-            densities = [(stresslet_weight/6.0)*(common_density0 * dir_vec_sym[k]
-                    + common_density1 * stresslet_density_vec_sym[k]) for
-                    k in range(self.dim)]
-            densities.append(stokeslet_weight * common_density2)
-
-            target_kernel = AxisTargetDerivative(i, self.laplace_kernel)
-            for deriv_dir in extra_deriv_dirs:
-                target_kernel = AxisTargetDerivative(deriv_dir, target_kernel)
-            sym_expr[i] += self._create_int_g(target_kernel=target_kernel,
-                source_kernels=tuple(common_source_kernels),
-                densities=tuple(densities),
-                qbx_forced_limit=qbx_forced_limit)
-
-        return sym_expr
-
-# }}}
-
-
-# {{{ StokesletWrapper dispatch method
-
-def StokesletWrapper(
-        dim: int,
-        mu: ExpressionT = _MU_SYM_DEFAULT,
-        method: Method = None
-        ):  # noqa: N806
-    if method is None:
-        import warnings
-        warnings.warn("Method argument not given. Falling back to 'naive'. "
-                "Method argument will be required in the future.")
-        method = Method.naive
-    if method == Method.naive:
-        return StokesletWrapperNaive(dim=dim, mu=mu)
-    elif method == Method.biharmonic:
-        return StokesletWrapperBiharmonic(dim=dim, mu=mu)
-    elif method == Method.laplace:
-        return StokesletWrapperTornberg(dim=dim, mu=mu, nu=0.5)
-    else:
-        raise ValueError(f"invalid method: {method}."
-                "Needs to be one of naive, laplace, biharmonic")
-
-
-def StressletWrapper(
-        dim: int,
-        mu: ExpressionT = _MU_SYM_DEFAULT,
-        method: Method = None
-        ):  # noqa: N806
-    if method is None:
-        import warnings
-        warnings.warn("Method argument not given. Falling back to 'naive'. "
-                "Method argument will be required in the future.")
-        method = Method.naive
-    if method == Method.naive:
-        return StressletWrapperNaive(dim=dim, mu=mu)
-    elif method == Method.biharmonic:
-        return StressletWrapperBiharmonic(dim=dim, mu=mu)
-    elif method == Method.laplace:
-        return StressletWrapperTornberg(dim=dim, mu=mu, nu=0.5)
-    else:
-        raise ValueError(f"invalid method: {method}."
-                "Needs to be one of naive, laplace, biharmonic")
 
 # }}}
 
@@ -503,20 +636,11 @@ class StokesOperator:
         self.ambient_dim = ambient_dim
         self.side = side
 
-        if mu is not None:
-            import warnings
-            warnings.warn("Explicitly giving mu is deprecated. "
-                "Use stokeslet and stresslet arguments.")
-        else:
-            mu = _MU_SYM_DEFAULT
-
         if stresslet is None:
-            stresslet = StressletWrapper(dim=self.ambient_dim,
-                mu=mu)
+            stresslet = make_stresslet_wrapper(dim=self.ambient_dim, mu=mu)
 
         if stokeslet is None:
-            stokeslet = StokesletWrapper(dim=self.ambient_dim,
-                mu=mu)
+            stokeslet = make_stokeslet_wrapper(dim=self.ambient_dim, mu=mu)
 
         self.stokeslet = stokeslet
         self.stresslet = stresslet

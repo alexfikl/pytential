@@ -25,12 +25,15 @@ THE SOFTWARE.
 """
 
 import sys
-from typing import Callable, Iterable
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
 
 import sumpy.symbolic as sym
 
 
-def sort_arrays_together(*arys, key=None):
+def sort_arrays_together(
+        *arys: Any,
+        key: Optional[Callable[[Any], Any]] = None
+        ) -> Iterable[Tuple[Any, ...]]:
     """Sort a sequence of arrays by considering them
     as an array of sequences using the given sorting key
 
@@ -62,22 +65,29 @@ def pytest_teardown_function():
         libc.malloc_trim(0)
 
 
-def chop(expr: sym.Basic, tol) -> sym.Basic:
-    """Given a symbolic expression, remove all occurences of numbers
-    with absolute value less than a given tolerance and replace floating
-    point numbers that are close to an integer up to a given relative
-    tolerance by the integer.
+def chop(expr: sym.Basic, rtol: float) -> sym.Basic:
+    """Chop numeric values to zero or the nearest integer.
+
+    This replaces all floating points numbers that are close to a given integer
+    (in relative tolerance *rtol*) with that integer.
+
+    :returns: a modified *expr* with all floating point values chopped to their
+        closest integer.
     """
     nums = expr.atoms(sym.Number)
-    replace_dict = {}
+    replace_dict: Dict[sym.Number, Union[int, float]] = {}
+
     for num in nums:
-        if float(abs(num)) < tol:
+        new_num = float(num)
+        if abs(new_num) < rtol:
             replace_dict[num] = 0
         else:
-            new_num = float(num)
-            if abs((int(new_num) - new_num)/new_num) < tol:
-                new_num = int(new_num)
-            replace_dict[num] = new_num
+            new_num_int = int(new_num)
+            if abs(new_num_int - new_num) < rtol * abs(new_num):
+                replace_dict[num] = new_num_int
+            else:
+                replace_dict[num] = new_num
+
     return expr.xreplace(replace_dict)
 
 
@@ -86,16 +96,19 @@ def forward_substitution(
         b: sym.Matrix,
         postprocess_division: Callable[[sym.Basic], sym.Basic],
         ) -> sym.Matrix:
-    """Given a lower triangular matrix *L* and a column vector *b*,
-    solve the system ``Lx = b`` and apply the callable *postprocess_division*
-    on each expression at the end of division calls.
+    """Solve a lower triangular linear system :math:`L x = b`.
+
+    This applies the callable *postprocess_division* after each division.
     """
     n = len(b)
     res = sym.Matrix(b)
+
     for i in range(n):
         for j in range(i):
-            res[i] -= L[i, j]*res[j]
+            res[i] -= L[i, j] * res[j]
+
         res[i] = postprocess_division(res[i] / L[i, i])
+
     return res
 
 
@@ -104,35 +117,40 @@ def backward_substitution(
         b: sym.Matrix,
         postprocess_division: Callable[[sym.Basic], sym.Basic],
         ) -> sym.Matrix:
-    """Given an upper triangular matrix *U* and a column vector *b*,
-    solve the system ``Ux = b`` and apply the callable *postprocess_division*
-    on each expression at the end of division calls.
+    """Solve a lower triangular linear system :math:`U x = b`.
+
+    This applies the callable *postprocess_division* after each division.
     """
     n = len(b)
     res = sym.Matrix(b)
-    for i in range(n-1, -1, -1):
+
+    for i in range(n - 1, -1, -1):
         for j in range(n - 1, i, -1):
-            res[i] -= U[i, j]*res[j]
+            res[i] -= U[i, j] * res[j]
+
         res[i] = postprocess_division(res[i] / U[i, i])
+
     return res
 
 
 def solve_from_lu(
-            L: sym.Matrix,
-            U: sym.Matrix,
-            perm: Iterable[int],
-            b: sym.Matrix,
-            postprocess_division: Callable[[sym.Basic], sym.Basic]
+        L: sym.Matrix,
+        U: sym.Matrix,
+        perm: Iterable[Tuple[int, int]],
+        b: sym.Matrix,
+        postprocess_division: Callable[[sym.Basic], sym.Basic]
         ) -> sym.Matrix:
-    """Given an LU factorization and a vector, solve a linear
-    system with intermediate results expanded to avoid
-    an explosion of the expression trees
+    """Solve a linear system with a given :math:`(L, U, P)` factorization.
 
-    :param L: lower triangular matrix
-    :param U: upper triangular matrix
-    :param perm: permutation matrix
-    :param b: a column vector to solve for
-    :param postprocess_division: callable that is called after each division
+    Intermediate results are expanded to avoid an explosion of the expression
+    trees. This calls :func:`forward_substitution` and :func:`backward_substitution`
+    to solve the triangular systems.
+
+    :param L: lower triangular matrix.
+    :param U: upper triangular matrix.
+    :param perm: permutation matrix.
+    :param b: a column vector to solve for.
+    :param postprocess_division: callable that is called after each division.
     """
     # Permute first
     res = sym.Matrix(b)

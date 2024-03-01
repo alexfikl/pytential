@@ -18,12 +18,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from typing import Literal, Union
 
-from typing import Union
 import numpy as np
+
 from pymbolic.primitives import Expression
+
 
 IntegralT = Union[int, np.integer]
 FloatT = Union[float, complex, np.floating, np.complexfloating]
-
 ExpressionT = Union[IntegralT, FloatT, Expression]
+
+ExpansionLimitType = Literal[1, -1, 2, -2, "avg"]
