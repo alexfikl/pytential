@@ -55,7 +55,7 @@ def muller_deflate(
     # Truncates the zero arrays created above if necessary.
     for i in range(n):
         miter = 0
-        roots0, niter0 = muller(f_deflated, maxiter=maxiter, tol=eps)
+        roots0, niter0 = muller(f_deflated, maxiter=maxiter, tol=eps, z_start=z_start)
         roots.append(roots0)
         niter.append(niter0)
 
@@ -83,12 +83,12 @@ def muller(f: Callable[[T], T], *,
 
     [1] https://en.wikipedia.org/wiki/Muller%27s_method
     """
-
     # initialize variables
     niter = 0
 
     if z_start is None:
-        z_start = np.random.rand(3) + 1j*np.random.rand(3)
+        rng = np.random.default_rng()
+        z_start = rng.random(3) + 1j*rng.random(3)
 
     z1, z2, z3 = z_start
 

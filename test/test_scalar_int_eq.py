@@ -186,8 +186,8 @@ def run_int_eq_test(actx,
 
     # {{{ set up test data
 
-    np.random.seed(22)
-    source_charges = np.random.randn(point_source.ndofs)
+    rng = np.random.default_rng(seed=42)
+    source_charges = rng.normal(size=point_source.ndofs)
     source_charges[-1] = -np.sum(source_charges[:-1])
     source_charges = source_charges.astype(dtype)
     assert np.sum(source_charges) < 1.0e-15
@@ -270,7 +270,7 @@ def run_int_eq_test(actx,
         mat = build_matrix(
                 bound_op.scipy_op(
                     actx, arg_name="u", dtype=dtype, **case.knl_concrete_kwargs))
-        w, v = la.eig(mat)
+        _w, _v = la.eig(mat)
 
         if visualize:
             pt.imshow(np.log10(1.0e-20 + np.abs(mat)))
@@ -369,7 +369,7 @@ def run_int_eq_test(actx,
             pt.savefig(f"tangential-derivative-{resolution}", dpi=300)
 
         rel_td_err_inf = la.norm(td_err, np.inf) / la.norm(tang_deriv_ref, np.inf)
-        logger.info("rel_td_err_inf: %.5e" % rel_td_err_inf)
+        logger.info("rel_td_err_inf: %.5e", rel_td_err_inf)
     else:
         rel_td_err_inf = None
 

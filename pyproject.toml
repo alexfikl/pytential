@@ -1,3 +1,165 @@
 [build-system]
-requires = ["setuptools>=42.0.0", "wheel>=0.34.2", "cython>=0.25"]
 build-backend = "setuptools.build_meta"
+requires = [
+    "cython>=0.25",
+    "setuptools>=63",
+]
+
+[project]
+name = "pytential"
+version = "2020.2"
+description = "Evaluate layer and volume potentials accurately. Solve integral equations."
+readme = "README.rst"
+authors = [
+    { name = "Andreas Kloeckner", email = "inform@tiker.net" },
+]
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Other Audience",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Natural Language :: English",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Scientific/Engineering :: Visualization",
+    "Topic :: Software Development :: Libraries",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "arraycontext>=2021.1",
+    "boxtree>=2021.1",
+    "immutables>=0.19",
+    "loopy>=2024.1",
+    "meshmode>=2021.2",
+    "modepy>=2021.1",
+    "pymbolic>=2022.2",
+    "pyopencl>=2022.1",
+    "pytools>=2022.1",
+    "scipy>=1.2",
+    "sumpy>=2022.1",
+]
+
+[project.optional-dependencies]
+doc = [
+    "furo",
+    "sphinx>=4",
+    "sphinx-copybutton",
+]
+fmmlib = [
+    "pyfmmlib>=2023.1",
+]
+test = [
+    "mypy",
+    "pylint",
+    "pytest",
+    "ruff",
+]
+
+[project.urls]
+Documentation = "https://documen.tician.de/pytential"
+Homepage = "https://mathema.tician.de/software/pytential"
+Repository = "https://github.com/inducer/pytential"
+
+[tool.setuptools.packages.find]
+include = [
+    "pytential*",
+]
+
+[tool.ruff]
+preview = true
+
+[tool.ruff.lint]
+extend-select = [
+    "B",    # flake8-bugbear
+    "C",    # flake8-comprehensions
+    # "D",    # pydocstyle
+    "E",    # pycodestyle
+    "F",    # pyflakes
+    "G",    # flake8-logging-format
+    # "I",    # flake8-isort
+    "N",    # pep8-naming
+    "NPY",  # numpy
+    "Q",    # flake8-quotes
+    "RUF",  # ruff
+    "UP",   # pyupgrade
+    "W",    # pycodestyle
+]
+extend-ignore = [
+    "C90",  # McCabe complexity
+    "B028", # no explicit stacklevel in warnings
+    "E226", # missing whitespace around arithmetic operator
+    "E241", # multiple spaces after comma
+    "E242", # tab after comma
+    "E265", # comment should have a space
+    "E402", # module level import not at the top of file
+    "N802", # function name should be lowercase
+    "N803", # argument name should be lowercase
+    "N806", # variable name should be lowercase
+    "N818", # error suffix in exception names
+    "RUF012", # ClassVar for mutable class attributes
+    "RUF022", # __all__ is not sorted
+    "UP031", # use f-strings instead of %
+    "UP032", # use f-strings instead of .format
+]
+exclude = [
+    "experiments/*.py",
+    "pytential/symbolic/old_diffop_primitives.py",
+    "pytential/symbolic/pde/maxwell/generalized_debye.py",
+]
+
+[tool.ruff.lint.flake8-quotes]
+docstring-quotes = "double"
+inline-quotes = "double"
+multiline-quotes = "double"
+
+# [tool.ruff.lint.isort]
+# combine-as-imports = true
+# known-first-party = [
+#     "arraycontext",
+#     "boxtree",
+#     "loopy",
+#     "meshmode",
+#     "modepy",
+#     "pymbolic",
+#     "pyopencl",
+#     "pytools",
+# ]
+# known-local-folder = [
+#     "pytential",
+# ]
+# lines-after-imports = 2
+
+[tool.pytest.ini_options]
+markers = [
+    "slowtest: mark a test as slow",
+]
+
+[tool.mypy]
+python_version = "3.8"
+warn_unused_ignores = true
+exclude = [
+    "pytential/symbolic/old_diffop_primitives.py",
+    "pytential/symbolic/pde/maxwell/generalized_debye.py",
+]
+
+[[tool.mypy.overrides]]
+module = [
+    "boxtree.*",
+    "cgen.*",
+    "loopy.*",
+    "mako.template",
+    "matplotlib.*",
+    "meshmode.*",
+    "pymbolic.*",
+    "pyopencl.*",
+    "pytential.qbx.target_specific.*",
+    "pytest.*",
+    "scipy.*",
+    "sumpy.*",
+]
+ignore_missing_imports = true

@@ -204,7 +204,8 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             else:
                 assert isinstance(fmm_order, int) and not isinstance(fmm_order, bool)
 
-                def fmm_level_to_order(kernel, kernel_args, tree, level):  # noqa pylint:disable=function-redefined
+                # pylint: disable-next=function-redefined
+                def fmm_level_to_order(kernel, kernel_args, tree, level):
                     return fmm_order
         assert isinstance(fmm_level_to_order, bool) or callable(fmm_level_to_order)
 
@@ -861,7 +862,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                     target_name.geometry, target_name.discr_stage)
             flat_target_nodes = _flat_nodes(target_name)
 
-            evt, output_for_each_kernel = lpot_applier(queue,
+            _, output_for_each_kernel = lpot_applier(queue,
                     targets=flat_target_nodes,
                     sources=flat_source_nodes,
                     centers=_flat_centers(target_name, qbx_forced_limit),
@@ -892,11 +893,12 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             flat_target_nodes = _flat_nodes(target_name)
 
             # FIXME: (Somewhat wastefully) compute P2P for all targets
-            evt, output_for_each_kernel = p2p(queue,
-                    targets=flat_target_nodes,
-                    sources=flat_source_nodes,
-                    strength=flat_strengths,
-                    **flat_kernel_args)
+            _, output_for_each_kernel = p2p(  # pylint: disable=possibly-used-before-assignment
+                  queue,
+                  targets=flat_target_nodes,
+                  sources=flat_source_nodes,
+                  strength=flat_strengths,
+                  **flat_kernel_args)
 
             target_discrs_and_qbx_sides = ((target_discr, qbx_forced_limit),)
             geo_data = self.qbx_fmm_geometry_data(
@@ -934,7 +936,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                 tgt_subset_kwargs[f"result_{i}"] = res_i
 
             if qbx_tgt_count:
-                lpot_applier_on_tgt_subset(
+                lpot_applier_on_tgt_subset(  # pylint: disable=possibly-used-before-assignment
                         queue,
                         targets=flat_target_nodes,
                         sources=flat_source_nodes,

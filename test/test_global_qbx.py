@@ -214,7 +214,7 @@ def run_source_refinement_test(actx_factory, mesh, order,
             logger.info("radius [%s] > %.12e",
                     ", ".join([f"{r:.12e}" for r in rad]), dist)
             logger.info("radius [%s]",
-                    ", ".join([f"{str(dist>=r):>18}" for r in rad]))
+                    ", ".join([f"{dist >= r:>18}" for r in rad]))
 
         return is_undisturbed
 
@@ -394,7 +394,7 @@ def test_target_association(actx_factory, curve_name, curve_f, nelements,
      vol_int_slice,
      vol_ext_slice,
      far_slice,
-     ) = [slice(start, end) for start, end in zip(np.r_[0, sizes], sizes)]
+     ) = (slice(start, end) for start, end in zip(np.r_[0, sizes], sizes))
 
     # }}}
 

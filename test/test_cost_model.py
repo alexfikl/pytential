@@ -139,9 +139,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
     )
 
     queue.finish()
-    logger.info("OpenCL time for process_form_qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("OpenCL time for process_form_qbxl: %s", time.time() - start_time)
 
     python_ndirect_sources_per_target_box = (
         python_cost_model.get_ndirect_sources_per_target_box(
@@ -156,9 +154,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
         python_ndirect_sources_per_target_box
     )
 
-    logger.info("Python time for process_form_qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("Python time for process_form_qbxl: %s", time.time() - start_time)
 
     assert np.array_equal(actx.to_numpy(cl_p2qbxl), python_p2qbxl)
 
@@ -174,9 +170,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
     )
 
     queue.finish()
-    logger.info("OpenCL time for process_m2qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("OpenCL time for process_m2qbxl: %s", time.time() - start_time)
 
     start_time = time.time()
 
@@ -184,9 +178,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
         queue, geo_data, python_cost_factors["m2qbxl_cost"]
     )
 
-    logger.info("Python time for process_m2qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("Python time for process_m2qbxl: %s", time.time() - start_time)
 
     assert np.array_equal(actx.to_numpy(cl_m2qbxl), python_m2qbxl)
 
@@ -202,9 +194,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
     )
 
     queue.finish()
-    logger.info("OpenCL time for process_l2qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("OpenCL time for process_l2qbxl: %s", time.time() - start_time)
 
     start_time = time.time()
 
@@ -212,9 +202,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
         queue, geo_data, python_cost_factors["l2qbxl_cost"]
     )
 
-    logger.info("Python time for process_l2qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("Python time for process_l2qbxl: %s", time.time() - start_time)
 
     assert np.array_equal(actx.to_numpy(cl_l2qbxl), python_l2qbxl)
 
@@ -230,9 +218,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
     )
 
     queue.finish()
-    logger.info("OpenCL time for process_eval_qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("OpenCL time for process_eval_qbxl: %s", time.time() - start_time)
 
     start_time = time.time()
 
@@ -240,9 +226,7 @@ def test_compare_cl_and_py_cost_model(actx_factory):
         queue, geo_data, python_cost_factors["qbxl2p_cost"]
     )
 
-    logger.info("Python time for process_eval_qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("Python time for process_eval_qbxl: %s", time.time() - start_time)
 
     assert np.array_equal(actx.to_numpy(cl_eval_qbxl), python_eval_qbxl)
 
@@ -259,9 +243,8 @@ def test_compare_cl_and_py_cost_model(actx_factory):
     )
 
     queue.finish()
-    logger.info("OpenCL time for eval_target_specific_qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("OpenCL time for eval_target_specific_qbxl: %s",
+                time.time() - start_time)
 
     start_time = time.time()
 
@@ -271,9 +254,8 @@ def test_compare_cl_and_py_cost_model(actx_factory):
             python_ndirect_sources_per_target_box
         )
 
-    logger.info("Python time for eval_target_specific_qbxl: {}".format(
-        str(time.time() - start_time)
-    ))
+    logger.info("Python time for eval_target_specific_qbxl: %s",
+                time.time() - start_time)
 
     assert np.array_equal(
         actx.to_numpy(cl_eval_target_specific_qbxl),
@@ -695,11 +677,11 @@ class OpCountingTranslationCostModel:
 
 @pytest.mark.parametrize("dim, off_surface, use_target_specific_qbx", (
         (2, False, False),
-        (2, True,  False),
+        (2, True, False),
         (3, False, False),
         (3, False, True),
-        (3, True,  False),
-        (3, True,  True)))
+        (3, True, False),
+        (3, True, True)))
 def test_cost_model_correctness(actx_factory, dim, off_surface,
         use_target_specific_qbx):
     """Check that computed cost matches that of a constant-one FMM."""
@@ -720,19 +702,20 @@ def test_cost_model_correctness(actx_factory, dim, off_surface,
         ntargets = 10 ** 3
         targets = PointsTarget(
                 make_uniform_particle_array(queue, ntargets, dim, np.float64))
-        target_discrs_and_qbx_sides = ((targets, 0),)
         qbx_forced_limit = None
 
         places = GeometryCollection((lpot_source, targets))
     else:
         places = GeometryCollection(lpot_source)
+        qbx_forced_limit = 1
 
     source_dd = places.auto_source
     density_discr = places.get_discretization(source_dd.geometry)
 
-    if not off_surface:
+    if off_surface:
+        target_discrs_and_qbx_sides = ((targets, 0),)
+    else:
         target_discrs_and_qbx_sides = ((density_discr, 1),)
-        qbx_forced_limit = 1
 
     # Construct bound op, run cost model.
     sigma_sym = sym.var("sigma")
