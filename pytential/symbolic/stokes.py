@@ -45,7 +45,7 @@ __doc__ = """
 _MU_SYM_DEFAULT = SpatialConstant("mu")
 
 
-class StokesletWrapperBase(ABC):
+class StokesletWrapperBase(ABC):  # noqa: B024
     """Wrapper class for the :class:`~sumpy.kernel.StokesletKernel` kernel.
 
     This class is meant to shield the user from the messiness of writing
@@ -148,7 +148,7 @@ class StokesletWrapperBase(ABC):
         raise NotImplementedError
 
 
-class StressletWrapperBase(ABC):
+class StressletWrapperBase(ABC):  # noqa: B024
     """Wrapper class for the :class:`~sumpy.kernel.StressletKernel` kernel.
 
     This class is meant to shield the user from the messiness of writing
@@ -267,8 +267,10 @@ def _create_int_g(knl, deriv_dirs, density, **kwargs):
     for deriv_dir in deriv_dirs:
         knl = AxisTargetDerivative(deriv_dir, knl)
 
-    kernel_arg_names = set(karg.loopy_arg.name
-            for karg in (knl.get_args() + knl.get_source_args()))
+    kernel_arg_names = {
+        karg.loopy_arg.name
+        for karg in (*knl.get_args(), *knl.get_source_args())
+    }
 
     # When the kernel is Laplace, mu and nu are not kernel arguments
     # Also when nu==0.5, it's not a kernel argument to StokesletKernel

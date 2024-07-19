@@ -139,11 +139,11 @@ def test_base_kernel_merge():
         for i in range(dim)]))
 
     int_g3 = IntG(target_kernel=biharm_knl,
-            source_kernels=source_kernels + [AxisSourceDerivative(0, biharm_knl)],
+            source_kernels=[*source_kernels, AxisSourceDerivative(0, biharm_knl)],
             densities=[density*sources[0]*(-1.0) for _ in range(dim)] + [2*density],
             qbx_forced_limit=1)
     int_g4 = IntG(target_kernel=biharm_knl,
-            source_kernels=source_kernels + [AxisSourceDerivative(1, biharm_knl)],
+            source_kernels=[*source_kernels, AxisSourceDerivative(1, biharm_knl)],
             densities=[density*sources[1]*(-1.0) for _ in range(dim)] + [2*density],
             qbx_forced_limit=1)
 

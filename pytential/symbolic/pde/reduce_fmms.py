@@ -335,7 +335,7 @@ class CoefficientCollector(Mapper):
         d_den = self.rec(expr.denominator)
         if len(d_den) > 1:
             raise ValueError
-        den_var, den_coeff = list(d_den.items())[0]
+        den_var, den_coeff = next(d_den.items())
 
         return {num_var/den_var: num_coeff/den_coeff for
             num_var, num_coeff in d_num.items()}

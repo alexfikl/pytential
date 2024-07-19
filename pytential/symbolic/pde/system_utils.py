@@ -169,7 +169,7 @@ def convert_target_multiplier_to_source(int_g):
     sources = sympy.symbols(f"y0:{knl.dim}")
     # instead of just x, we use x = (d + y)
     targets = [d + source for d, source in zip(ds, sources)]
-    orig_expr = sympy.Function("f")(*ds)
+    orig_expr = sympy.Function("f")(*ds)  # pylint: disable=not-callable
     expr = orig_expr
     found = False
     while isinstance(knl, KernelWrapper):
@@ -204,7 +204,8 @@ def convert_target_multiplier_to_source(int_g):
             rest_terms = sympy.Poly(arg.xreplace({orig_expr: 1}), *ds, *sources)
             derivatives = [(d, 0) for d in ds]
         else:
-            assert False, "impossible condition"
+            raise AssertionError("impossible condition")
+
         assert len(rest_terms.terms()) == 1
         monom, coeff = rest_terms.terms()[0]
         expr_multiplier = _monom_to_expr(monom[:len(ds)], ds)
@@ -326,8 +327,9 @@ def get_deriv_relation_kernel(kernel, base_kernel, tol=1e-10, order=None,
     expr = _get_kernel_expression(kernel.expression, kernel_arguments)
     vec = []
     for i in range(len(mis)):
-        vec.append(evalf(expr.xreplace(dict((k, v) for
-            k, v in zip(sym_vec, rand[:, i])))))
+        vec.append(evalf(expr.xreplace(
+            dict(zip(sym_vec, rand[:, i]))
+            )))
     vec = sym.Matrix(vec)
     result = []
     const = 0
@@ -354,7 +356,10 @@ def get_deriv_relation_kernel(kernel, base_kernel, tol=1e-10, order=None,
 
 @memoize_on_first_arg
 def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
-        kernel_arguments=None):
+        kernel_arguments=None, rng=None):
+    if rng is None:
+        rng = np.random.default_rng()
+
     dim = base_kernel.dim
 
     pde = base_kernel.get_pde_as_diff_op()
@@ -372,10 +377,10 @@ def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
     if order == pde.order:
         pde_mis = [ident.mi for eq in pde.eqs for ident in eq.keys()]
         pde_mis = [mi for mi in pde_mis if sum(mi) == order]
-        logger.debug(f"Removing {pde_mis[-1]} to avoid linear dependent mis")
+        logger.debug("Removing %s to avoid linear dependent mis", pde_mis[-1])
         mis.remove(pde_mis[-1])
 
-    rand = np.random.randint(1, 10**15, (dim, len(mis)))
+    rand = rng.integers(1, 10**15, size=(dim, len(mis)))
     rand = rand.astype(object)
     for i in range(rand.shape[0]):
         for j in range(rand.shape[1]):
@@ -393,9 +398,7 @@ def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
                 if nderivs == 0:
                     continue
                 expr = expr.diff(sym_vec[var_idx], nderivs)
-            replace_dict = dict(
-                (k, v) for k, v in zip(sym_vec, rand[:, rand_vec_idx])
-            )
+            replace_dict = dict(zip(sym_vec, rand[:, rand_vec_idx]))
             eval_expr = evalf(expr.xreplace(replace_dict))
             row.append(eval_expr)
         row.append(1)
@@ -690,8 +693,10 @@ def get_int_g_source_group_identifier(int_g):
     group have the same source attributes.
     """
     target_arg_names = get_normal_vector_names(int_g.target_kernel)
-    args = dict((k, v) for k, v in sorted(
-        int_g.kernel_arguments.items()) if k not in target_arg_names)
+    args = {
+        k: v for k, v in sorted(int_g.kernel_arguments.items())
+        if k not in target_arg_names
+    }
     return (int_g.source, hashable_kernel_args(args),
             int_g.target_kernel.get_base_kernel())
 
@@ -701,8 +706,10 @@ def get_int_g_target_group_identifier(int_g):
     group have the same target attributes.
     """
     target_arg_names = get_normal_vector_names(int_g.target_kernel)
-    args = dict((k, v) for k, v in sorted(
-        int_g.kernel_arguments.items()) if k in target_arg_names)
+    args = {
+        k: v for k, v in sorted(int_g.kernel_arguments.items())
+        if k in target_arg_names
+    }
     return (int_g.target, int_g.qbx_forced_limit, int_g.target_kernel,
             hashable_kernel_args(args))
 
@@ -830,7 +837,7 @@ def convert_directional_source_to_axis_source(int_g):
             densities.append(coeff * density)
 
     kernel_arguments = filter_kernel_arguments(
-        list(source_kernels) + [int_g.target_kernel], int_g.kernel_arguments)
+        [*source_kernels, int_g.target_kernel], int_g.kernel_arguments)
     return int_g.copy(source_kernels=tuple(source_kernels),
             densities=tuple(densities), kernel_arguments=kernel_arguments)
 
@@ -873,7 +880,7 @@ def convert_axis_source_to_directional_source(int_g):
     axes = [knl.axis for knl in knls]
     if axes != list(range(dim)):
         return int_g
-    base_knls = set(knl.inner_kernel for knl in knls)
+    base_knls = {knl.inner_kernel for knl in knls}
     if len(base_knls) > 1:
         return int_g
     base_knl = base_knls.pop()
@@ -886,7 +893,7 @@ def convert_axis_source_to_directional_source(int_g):
         count += 1
 
     kernel_arguments[name] = \
-            np.array(int_g.densities, dtype=np.object)
+            np.array(int_g.densities, dtype=object)
     res = int_g.copy(
             source_kernels=(
                 DirectionalSourceDerivative(base_knl, dir_vec_name=name),),

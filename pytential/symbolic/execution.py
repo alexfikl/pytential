@@ -267,7 +267,8 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
                 for grp in discr.groups
                 ])
         except AssertionError:
-            raise TypeError("non-homogeneous element groups are not supported")
+            raise TypeError(
+                "non-homogeneous element groups are not supported") from None
 
         return self.rec(expr.shape_name_to_expr[shape_name.lower()])
 

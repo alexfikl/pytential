@@ -238,7 +238,7 @@ def run_exterior_stokes(actx_factory, *,
             timing_data=fmm_timing_data)
 
     def print_timing_data(timings, name):
-        result = {k: 0 for k in list(timings.values())[0].keys()}
+        result = dict.fromkeys(next(timings.values()))
         total = 0
         for k, timing in timings.items():
             for k, v in timing.items():
