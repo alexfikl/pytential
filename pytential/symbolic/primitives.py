@@ -406,7 +406,6 @@ class DiscretizationProperty(Expression):
 
     def __post_init__(self) -> None:
         if not isinstance(self.dofdesc, DOFDescriptor):
-            breakpoint()
             warn("Passing a 'dofdesc' that is not a 'DOFDescriptor' to "
                  f"{type(self).__name__!r} is deprecated and will stop working "
                  "in 2025. Use 'as_dofdesc' to convert the descriptor.",
@@ -429,7 +428,7 @@ class IsShapeClass(DiscretizationProperty):
     # FIXME: this is added for backwards compatibility with pre-dataclass expressions
     def __init__(self, shape: mp.Shape, dofdesc: DOFDescriptorLike) -> None:
         object.__setattr__(self, "shape", shape)
-        super().__init__(dofdesc)
+        super().__init__(dofdesc)  # type: ignore[arg-type]
 
 
 @expr_dataclass()
@@ -449,14 +448,14 @@ class NodeCoordinateComponent(DiscretizationProperty):
     # FIXME: this is added for backwards compatibility with pre-dataclass expressions
     def __init__(self, ambient_axis: int, dofdesc: DOFDescriptorLike) -> None:
         object.__setattr__(self, "ambient_axis", ambient_axis)
-        super().__init__(dofdesc)
+        super().__init__(dofdesc)   # type: ignore[arg-type]
 
 
 def nodes(ambient_dim, dofdesc=None):
     """Return a :class:`pymbolic.geometric_algebra.MultiVector` of node
     locations.
     """
-
+    dofdesc = as_dofdesc(dofdesc)
     return MultiVector(
             make_obj_array([
                 NodeCoordinateComponent(i, dofdesc)
@@ -505,10 +504,9 @@ class NumReferenceDerivative(DiscretizationProperty):
                  dofdesc: DOFDescriptorLike) -> None:
         object.__setattr__(self, "ref_axes", ref_axes)
         object.__setattr__(self, "operand", operand)
-        super().__init__(dofdesc)
+        super().__init__(dofdesc)   # type: ignore[arg-type]
 
         if isinstance(self.ref_axes, int):
-            breakpoint()
             warn(f"Passing an 'int' as 'ref_axes' to {type(self).__name__!r} "
                  "is deprecated and will be removed in 2025. Pass the "
                  "well-formatted tuple '((ref_axes, 1),)' instead.",
@@ -534,6 +532,7 @@ def reference_jacobian(func, output_dim, dim, dofdesc=None):
     """Return a :class:`numpy.ndarray` representing the Jacobian of a vector function
     with respect to the reference coordinates.
     """
+    dofdesc = as_dofdesc(dofdesc)
     jac = np.zeros((output_dim, dim), object)
 
     for i in range(output_dim):
@@ -588,6 +587,7 @@ def area_element(ambient_dim, dim=None, dofdesc=None):
 
 
 def sqrt_jac_q_weight(ambient_dim, dim=None, dofdesc=None):
+    dofdesc = as_dofdesc(dofdesc)
     return cse(
             sqrt(
                 area_element(ambient_dim, dim, dofdesc)
@@ -601,6 +601,7 @@ def normal(ambient_dim, dim=None, dofdesc=None):
     # Don't be tempted to add a sign here. As it is, it produces
     # exterior normals for positively oriented curves and surfaces.
 
+    dofdesc = as_dofdesc(dofdesc)
     pder = (
             pseudoscalar(ambient_dim, dim, dofdesc)
             / area_element(ambient_dim, dim, dofdesc))
@@ -660,6 +661,7 @@ def second_fundamental_form(ambient_dim, dim=None, dofdesc=None):
     if not (ambient_dim == 3 and dim == 2):
         raise NotImplementedError("only available for surfaces in 3D")
 
+    dofdesc = as_dofdesc(dofdesc)
     r = nodes(ambient_dim, dofdesc=dofdesc).as_vector()
 
     # https://en.wikipedia.org/w/index.php?title=Second_fundamental_form&oldid=821047433#Classical_notation
@@ -1070,7 +1072,6 @@ class Interpolation(Expression):
 
     def __post_init__(self) -> None:
         if not isinstance(self.from_dd, DOFDescriptor):
-            breakpoint()
             warn("Passing a 'from_dd' that is not a 'DOFDescriptor' to "
                  f"{type(self).__name__!r} is deprecated and will stop working "
                  "in 2025. Use 'as_dofdesc' to convert the descriptor.",
@@ -1079,7 +1080,6 @@ class Interpolation(Expression):
             object.__setattr__(self, "from_dd", as_dofdesc(self.from_dd))
 
         if not isinstance(self.to_dd, DOFDescriptor):
-            breakpoint()
             warn("Passing a 'to_dd' that is not a 'DOFDescriptor' to "
                  f"{type(self).__name__!r} is deprecated and will stop working "
                  "in 2025. Use 'as_dofdesc' to convert the descriptor.",
@@ -1134,6 +1134,7 @@ class NodeMin(SingleScalarOperandExpression):
 def integral(ambient_dim, dim, operand, dofdesc=None):
     """A volume integral of *operand*."""
 
+    dofdesc = as_dofdesc(dofdesc)
     return NodeSum(
             area_element(ambient_dim, dim, dofdesc)
             * QWeight(dofdesc)
@@ -1170,7 +1171,6 @@ class SingleScalarOperandExpressionWithWhere(Expression):
 
     def __post_init__(self) -> None:
         if not isinstance(self.dofdesc, DOFDescriptor):
-            breakpoint()
             warn("Passing a 'dofdesc' that is not a 'DOFDescriptor' to "
                  f"{type(self).__name__!r} is deprecated and will stop working "
                  "in 2025. Use 'as_dofdesc' to convert the descriptor.",
@@ -1211,7 +1211,6 @@ class Ones(Expression):
 
     def __post_init__(self) -> None:
         if not isinstance(self.dofdesc, DOFDescriptor):
-            breakpoint()
             warn("Passing a 'dofdesc' that is not a 'DOFDescriptor' to "
                  f"{type(self).__name__!r} is deprecated and will stop working "
                  "in 2025. Use 'as_dofdesc' to convert the descriptor.",
@@ -1222,11 +1221,13 @@ class Ones(Expression):
 
 def ones_vec(dim, dofdesc=None):
     from pytools.obj_array import make_obj_array
-    return MultiVector(
-                make_obj_array(dim*[Ones(dofdesc)]))
+
+    dofdesc = as_dofdesc(dofdesc)
+    return MultiVector(make_obj_array(dim*[Ones(dofdesc)]))
 
 
 def area(ambient_dim, dim, dofdesc=None):
+    dofdesc = as_dofdesc(dofdesc)
     return cse(integral(ambient_dim, dim, Ones(dofdesc), dofdesc), "area",
             cse_scope.DISCRETIZATION)
 
@@ -1261,7 +1262,6 @@ class IterativeInverse(Expression):
 
     def __post_init__(self) -> None:
         if not isinstance(self.dofdesc, DOFDescriptor):
-            breakpoint()
             warn("Passing a 'dofdesc' that is not a 'DOFDescriptor' to "
                  f"{type(self).__name__!r} is deprecated and will stop working "
                  "in 2025. Use 'as_dofdesc' to convert the descriptor.",
@@ -1808,9 +1808,9 @@ def tangential_onb(ambient_dim, dim=None, dofdesc=None):
         q = avec
         for j in range(k):
             q = q - np.dot(avec, orth_pd_mat[:, j])*orth_pd_mat[:, j]
-        q = cse(q, "q%d" % k)
+        q = cse(q, f"q{k}")
 
-        orth_pd_mat[:, k] = cse(q/sqrt(np.sum(q**2)), "orth_pd_vec%d_" % k)
+        orth_pd_mat[:, k] = cse(q/sqrt(np.sum(q**2)), f"orth_pd_vec{k}_")
 
     # }}}
 
@@ -1836,7 +1836,8 @@ def tangential_to_xyz(tangential_vec, dofdesc=None):
 
 def project_to_tangential(xyz_vec, dofdesc=None):
     return tangential_to_xyz(
-            cse(xyz_to_tangential(xyz_vec, dofdesc), dofdesc))
+            cse(xyz_to_tangential(xyz_vec, dofdesc)),
+            dofdesc)
 
 
 def n_dot(vec, dofdesc=None):
