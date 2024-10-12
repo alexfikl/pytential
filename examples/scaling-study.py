@@ -36,9 +36,9 @@ def make_mesh(nx, ny, visualize=False):
             affine_map(
                 base_mesh,
                 A=np.diag([dx*0.25, dx*0.25]),
-                b=np.array([dx*(ix-nx/2), dx*(iy-ny/2)]))
-            for ix in range(nx)
-            for iy in range(ny)]
+                b=np.array([dx*(i_x-nx/2), dx*(i_y-ny/2)]))
+            for i_x in range(nx)
+            for i_y in range(ny)]
 
     mesh = merge_disjoint_meshes(meshes, single_group=True)
 
@@ -67,7 +67,7 @@ def timing_run(nx, ny, visualize=False):
             InterpolatoryQuadratureSimplexGroupFactory(bdry_quad_order))
 
     from pytential.qbx import (
-            QBXLayerPotentialSource, QBXTargetAssociationFailedException)
+            QBXLayerPotentialSource, QBXTargetAssociationFailedError)
     qbx = QBXLayerPotentialSource(
             density_discr, fine_order=bdry_ovsmp_quad_order, qbx_order=qbx_order,
             fmm_order=fmm_order
@@ -169,7 +169,7 @@ def timing_run(nx, ny, visualize=False):
                         auto_where=("qbx_target_assoc", "plot_targets")
                         )(actx, sigma=sigma, k=k)
                     )
-        except QBXTargetAssociationFailedException as e:
+        except QBXTargetAssociationFailedError as e:
             fplot.write_vtk_file("scaling-study-failed-targets.vts", [
                 ("failed", actx.to_numpy(e.failed_target_flags)),
                 ])

@@ -91,16 +91,11 @@ extend-select = [
 ]
 extend-ignore = [
     "C90",  # McCabe complexity
-    "B028", # no explicit stacklevel in warnings
     "E226", # missing whitespace around arithmetic operator
-    "E241", # multiple spaces after comma
-    "E242", # tab after comma
-    "E265", # comment should have a space
     "E402", # module level import not at the top of file
     "N802", # function name should be lowercase
     "N803", # argument name should be lowercase
     "N806", # variable name should be lowercase
-    "N818", # error suffix in exception names
     "RUF012", # ClassVar for mutable class attributes
     "RUF022", # __all__ is not sorted
     "UP031", # use f-strings instead of %
@@ -137,6 +132,11 @@ multiline-quotes = "double"
 [tool.pytest.ini_options]
 markers = [
     "slowtest: mark a test as slow",
+]
+
+[tool.typos.default]
+extend-ignore-re = [
+  "(?Rm)^.*(#|//)\\s*spellchecker:\\s*disable-line$"
 ]
 
 [tool.mypy]

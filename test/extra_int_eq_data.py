@@ -101,7 +101,7 @@ class IntegralEquationTestCase:
     target_order: Optional[int] = None
     use_refinement: bool = True
     group_cls: Type[MeshElementGroup] = SimplexElementGroup
-    group_factory_cls: ElementGroupFactory = InterpolatoryQuadratureGroupFactory
+    group_factory_cls: Type[ElementGroupFactory] = InterpolatoryQuadratureGroupFactory
 
     # fmm
     fmm_backend: Optional[str] = "sumpy"
@@ -570,12 +570,12 @@ class ManyEllipsoidTestCase(Helmholtz3DTestCase):
                     base_mesh,
                     A=rand_rotation_matrix(3),
                     b=self.pitch*np.array([
-                        (ix-self.nx//2),
-                        (iy-self.ny//2),
-                        (iz-self.ny//2)]))
-                for ix in range(self.nx)
-                for iy in range(self.ny)
-                for iz in range(self.nz)
+                        (i_x-self.nx//2),
+                        (i_y-self.ny//2),
+                        (i_z-self.ny//2)]))
+                for i_x in range(self.nx)
+                for i_y in range(self.ny)
+                for i_z in range(self.nz)
                 ]
 
         return merge_disjoint_meshes(meshes, single_group=True)

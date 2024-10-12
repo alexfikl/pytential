@@ -313,7 +313,7 @@ class RefinerWrangler(TreeWranglerBase):
             nelements_to_refine_prev = actx.to_numpy(
                 actx.np.sum(refine_flags)).item()
 
-        found_element_to_refine = actx.zeros(1, dtype=np.int32)
+        found_element_to_refine = actx.np.zeros(1, dtype=np.int32)
         found_element_to_refine.finish()
         unwrap_args = AreaQueryElementwiseTemplate.unwrap_args
 
@@ -378,7 +378,7 @@ class RefinerWrangler(TreeWranglerBase):
             nelements_to_refine_prev = actx.to_numpy(
                     actx.np.sum(refine_flags)).item()
 
-        found_element_to_refine = actx.zeros(1, dtype=np.int32)
+        found_element_to_refine = actx.np.zeros(1, dtype=np.int32)
         found_element_to_refine.finish()
 
         from pytential import bind, sym
@@ -486,7 +486,7 @@ def make_empty_refine_flags(actx, density_discr):
     :returns: A :class:`pyopencl.array.Array` suitable for use as refine flags,
         initialized to zero.
     """
-    result = actx.zeros(density_discr.mesh.nelements, np.int32)
+    result = actx.np.zeros(density_discr.mesh.nelements, np.int32)
     result.finish()
     return result
 
@@ -507,9 +507,10 @@ def _warn_max_iterations(violated_criteria, expansion_disturbance_tolerance):
                 len(violated_criteria),
                 expansion_disturbance_tolerance,
                 ", ".join(
-                    "%d: %s" % (i+1, vc_text)
+                    f"{i + 1}: {vc_text}"
                     for i, vc_text in enumerate(violated_criteria))),
-            RefinerNotConvergedWarning)
+            RefinerNotConvergedWarning,
+            stacklevel=5)
 
 
 def _visualize_refinement(actx: PyOpenCLArrayContext, discr,
@@ -542,9 +543,8 @@ def _visualize_refinement(actx: PyOpenCLArrayContext, discr,
 
         element_nr_base += meg.nelements
 
-    nodes_flags = DOFArray(actx, tuple(nodes_flags))
     vis_data = [
-        ("refine_flags", nodes_flags),
+        ("refine_flags", DOFArray(actx, tuple(nodes_flags))),
         ]
 
     if 0:

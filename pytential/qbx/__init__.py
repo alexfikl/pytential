@@ -32,7 +32,7 @@ from pytools import memoize_method, memoize_in, single_valued
 from sumpy.expansion import DefaultExpansionFactory as DefaultExpansionFactoryBase
 
 from pytential.qbx.cost import AbstractQBXCostModel
-from pytential.qbx.target_assoc import QBXTargetAssociationFailedException
+from pytential.qbx.target_assoc import QBXTargetAssociationFailedError
 from pytential.source import LayerPotentialSourceBase
 
 import logging
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 __doc__ = """
 .. autoclass:: QBXLayerPotentialSource
 
-.. autoclass:: QBXTargetAssociationFailedException
+.. autoclass:: QBXTargetAssociationFailedError
 
 .. autoclass:: DefaultExpansionFactory
 
@@ -507,7 +507,8 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             from warnings import warn
             warn(
                     "Executing global QBX without refinement. "
-                    "This is unlikely to work.")
+                    "This is unlikely to work.",
+                    stacklevel=3)
 
         if extra_args is None:
             extra_args = {}
@@ -776,7 +777,8 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             from warnings import warn
             warn(
                     "Timing data collection not supported.",
-                    category=UnableToCollectTimingData)
+                    category=UnableToCollectTimingData,
+                    stacklevel=2)
 
         # {{{ evaluate and flatten inputs
 
@@ -837,13 +839,13 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                 assert o.qbx_forced_limit is not None
                 assert abs(o.qbx_forced_limit) > 0
 
-                self_outputs[(o.target_name, o.qbx_forced_limit)].append((i, o))
+                self_outputs[o.target_name, o.qbx_forced_limit].append((i, o))
             else:
                 qbx_forced_limit = o.qbx_forced_limit
                 if qbx_forced_limit is None:
                     qbx_forced_limit = 0
 
-                other_outputs[(o.target_name, qbx_forced_limit)].append((i, o))
+                other_outputs[o.target_name, qbx_forced_limit].append((i, o))
 
         queue = actx.queue
         results = [None] * len(insn.outputs)
@@ -915,7 +917,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
 
             qbx_tgt_numberer = self.get_qbx_target_numberer(
                     tgt_to_qbx_center.dtype)
-            qbx_tgt_count = actx.zeros((), np.int32)
+            qbx_tgt_count = actx.np.zeros((), np.int32)
             qbx_tgt_numbers = actx.np.zeros_like(tgt_to_qbx_center)
 
             qbx_tgt_numberer(
@@ -989,7 +991,7 @@ def get_flat_strengths_from_densities(
 
 __all__ = (
         "QBXLayerPotentialSource",
-        "QBXTargetAssociationFailedException",
+        "QBXTargetAssociationFailedError",
         )
 
 # vim: fdm=marker

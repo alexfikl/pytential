@@ -410,11 +410,12 @@ QBX_FAILED_TARGET_ASSOCIATION_REFINER = AreaQueryElementwiseTemplate(
 
 # {{{ target associator
 
-class QBXTargetAssociationFailedException(Exception):
+class QBXTargetAssociationFailedError(Exception):
     """
     .. attribute:: refine_flags
     .. attribute:: failed_target_flags
     """
+
     def __init__(self, refine_flags, failed_target_flags, message):
         self.refine_flags = refine_flags
         self.failed_target_flags = failed_target_flags
@@ -429,6 +430,10 @@ class QBXTargetAssociationFailedException(Exception):
 
     def __repr__(self):
         return "<%s>" % type(self).__name__
+
+
+# NOTE: this is deprecated
+QBXTargetAssociationFailedException = QBXTargetAssociationFailedError
 
 
 class QBXTargetAssociation(DeviceDataRecord):
@@ -527,7 +532,7 @@ class TargetAssociationWrangler(TreeWranglerBase):
                 tree.particle_id_dtype,
                 max_levels)
 
-        found_target_close_to_element = actx.zeros(1, np.int32)
+        found_target_close_to_element = actx.np.zeros(1, np.int32)
         found_target_close_to_element.finish()
 
         # Perform a space invader query over the sources.
@@ -658,7 +663,7 @@ class TargetAssociationWrangler(TreeWranglerBase):
         wait_for = [evt]
 
         def make_target_field(fill_val, dtype=tree.coord_dtype):
-            arr = actx.zeros(tree.nqbxtargets, dtype)
+            arr = actx.np.zeros(tree.nqbxtargets, dtype)
             arr.fill(fill_val)
             wait_for.extend(arr.events)
             return arr
@@ -729,7 +734,7 @@ class TargetAssociationWrangler(TreeWranglerBase):
                 tree.particle_id_dtype,
                 max_levels)
 
-        found_element_to_refine = actx.zeros(1, np.int32)
+        found_element_to_refine = actx.np.zeros(1, np.int32)
         found_element_to_refine.finish()
 
         # Perform a space invader query over the sources.
@@ -790,7 +795,7 @@ class TargetAssociationWrangler(TreeWranglerBase):
         actx = self.array_context
 
         ntargets = sum(discr.ndofs for discr, _ in target_discrs_and_qbx_sides)
-        target_flags = actx.zeros(ntargets, dtype=np.int32)
+        target_flags = actx.np.zeros(ntargets, dtype=np.int32)
 
         offset = 0
         for discr, flags in target_discrs_and_qbx_sides:
@@ -832,7 +837,7 @@ def associate_targets_to_qbx_centers(places, geometry, wrangler,
 
         The side request can take on the values in :ref:`qbx-side-request-table`.
 
-    :raises pytential.qbx.QBXTargetAssociationFailedException:
+    :raises pytential.qbx.QBXTargetAssociationFailedError:
         when target association failed to find a center for a target.
         The returned exception object contains suggested refine flags.
 
@@ -849,7 +854,7 @@ def associate_targets_to_qbx_centers(places, geometry, wrangler,
 
     peer_lists = wrangler.find_peer_lists(tree)
 
-    target_status = actx.zeros(tree.nqbxtargets, dtype=np.int32)
+    target_status = actx.np.zeros(tree.nqbxtargets, dtype=np.int32)
     target_status.finish()
 
     have_close_targets = wrangler.mark_targets(places, dofdesc,
@@ -892,14 +897,14 @@ def associate_targets_to_qbx_centers(places, geometry, wrangler,
             "the 'target_association_tolerance' parameter, but "
             "this could also cause an invalid center assignment.")
 
-        refine_flags = actx.zeros(tree.nqbxelements, dtype=np.int32)
+        refine_flags = actx.np.zeros(tree.nqbxelements, dtype=np.int32)
         have_element_to_refine = wrangler.mark_elements_for_refinement(
                 places, dofdesc,
                 tree, peer_lists, target_status, refine_flags,
                 debug)
 
         assert have_element_to_refine
-        raise QBXTargetAssociationFailedException(
+        raise QBXTargetAssociationFailedError(
                 refine_flags=actx.freeze(refine_flags),
                 failed_target_flags=actx.freeze(center_not_found),
                 message=fail_msg)

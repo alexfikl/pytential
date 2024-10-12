@@ -385,7 +385,7 @@ def add_geometry_to_collection(
 
     This function is similar to :meth:`GeometryCollection.merge`, but it makes
     an attempt to maintain the caches in *places*. In particular, a shallow
-    copy of the following are pased to the new collection
+    copy of the following are passed to the new collection
 
     * Any cached discretizations from
       :func:`~pytential.qbx.refinement.refine_geometry_collection`.
@@ -419,7 +419,8 @@ def add_geometry_to_collection(
         if key not in known_cache_keys:
             from warnings import warn
             warn(f"GeometryCollection cache key '{key}' is not known and will "
-                 "be dropped in the new collection.")
+                 "be dropped in the new collection.",
+                 stacklevel=2)
             continue
 
         new_cache = new_places._get_cache(key)

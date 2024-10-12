@@ -43,7 +43,7 @@ def main(curve_fn=starfish, visualize=True):
             pre_density_discr, 4*target_order, qbx_order,
             fmm_order=False,
             target_association_tolerance=0.005,
-            #fmm_backend="fmmlib",
+            # fmm_backend="fmmlib",
             )
 
     from pytential.target import PointsTarget
@@ -71,13 +71,13 @@ def main(curve_fn=starfish, visualize=True):
     def op(**kwargs):
         kwargs.update(kernel_kwargs)
 
-        #return sym.d_dx(2, sym.S(kernel, sym.var("sigma"), **kwargs))
+        # return sym.d_dx(2, sym.S(kernel, sym.var("sigma"), **kwargs))
         # return sym.D(kernel, sym.var("sigma"), **kwargs)
         return sym.S(kernel, sym.var("sigma"), **kwargs)
 
     if 0:
         from random import randrange
-        sigma = actx.zeros(density_discr.ndofs, angle.entry_dtype)
+        sigma = actx.np.zeros(density_discr.ndofs, angle.entry_dtype)
         for _ in range(5):
             sigma[randrange(len(sigma))] = 1
 
