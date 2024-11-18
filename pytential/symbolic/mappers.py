@@ -20,6 +20,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from dataclasses import replace
 from functools import reduce
 
 from pymbolic.mapper.stringifier import (
@@ -28,10 +29,11 @@ from pymbolic.mapper.stringifier import (
 from pymbolic.mapper import (
         Mapper,
         CachedMapper,
-        CSECachingMapperMixin
+        CSECachingMapperMixin,
         )
 from pymbolic.mapper.dependency import (
         DependencyMapper as DependencyMapperBase)
+from pymbolic.mapper.flattener import FlattenMapper as FlattenMapperBase
 from pymbolic.geometric_algebra.mapper import (
         CombineMapper as CombineMapperBase,
         IdentityMapper as IdentityMapperBase,
@@ -49,6 +51,7 @@ from pymbolic.geometric_algebra.mapper import (
         as DerivativeSourceFinderBase,
 
         GraphvizMapper as GraphvizMapperBase)
+from pymbolic.typing import ExpressionT
 import pytential.symbolic.primitives as prim
 
 
@@ -59,11 +62,11 @@ def rec_int_g_arguments(mapper, expr):
             }
 
     changed = (
-            all(d is orig for d, orig in zip(densities, expr.densities))
+            all(d is orig for d, orig in zip(densities, expr.densities, strict=True))
             and all(
                 arg is orig for arg, orig in zip(
                     kernel_arguments.values(),
-                    expr.kernel_arguments.values()))
+                    expr.kernel_arguments.values(), strict=True))
             )
 
     return densities, kernel_arguments, changed
@@ -71,7 +74,7 @@ def rec_int_g_arguments(mapper, expr):
 
 # {{{ IdentityMapper
 
-class IdentityMapper(IdentityMapperBase):
+class IdentityMapper(IdentityMapperBase[[]]):
     def map_node_sum(self, expr):
         operand = self.rec(expr.operand)
         if operand is expr.operand:
@@ -129,9 +132,7 @@ class IdentityMapper(IdentityMapperBase):
         if not changed:
             return expr
 
-        return expr.copy(
-                densities=densities,
-                kernel_arguments=kernel_arguments)
+        return replace(expr, densities=densities, kernel_arguments=kernel_arguments)
 
     def map_interpolation(self, expr):
         operand = self.rec(expr.operand)
@@ -261,10 +262,7 @@ class EvaluationMapper(EvaluationMapperBase):
         if not changed:
             return expr
 
-        return expr.copy(
-                densities=densities,
-                kernel_arguments=kernel_arguments,
-                )
+        return replace(expr, densities=densities, kernel_arguments=kernel_arguments)
 
     def map_common_subexpression(self, expr):
         child = self.rec(expr.child)
@@ -279,17 +277,34 @@ class EvaluationMapper(EvaluationMapperBase):
 # }}}
 
 
+# {{{ FlattenMapper
+
+class FlattenMapper(FlattenMapperBase, IdentityMapper):
+    pass
+
+
+def flatten(expr):
+    return FlattenMapper()(expr)
+
+# }}}
+
+
 # {{{ LocationTagger
 
-class LocationTagger(CSECachingMapperMixin, IdentityMapper):
+class LocationTagger(CSECachingMapperMixin[ExpressionT, []],
+                     IdentityMapper):
     """Used internally by :class:`ToTargetTagger`."""
 
     def __init__(self, default_target, default_source):
         self.default_source = default_source
         self.default_target = default_target
 
-    map_common_subexpression_uncached = \
-            IdentityMapper.map_common_subexpression
+    def map_common_subexpression_uncached(self, expr) -> ExpressionT:
+        # Mypy 1.13 complains about this:
+        # error: Too few arguments for "map_common_subexpression" of "IdentityMapper"  [call-arg]  # noqa: E501
+        # error: Argument 1 to "map_common_subexpression" of "IdentityMapper" has incompatible type "LocationTagger"; expected "IdentityMapper[P]"  [arg-type]  # noqa: E501
+        # This seems spurious?
+        return IdentityMapper.map_common_subexpression(self, expr)  # type: ignore[arg-type, call-arg]
 
     def _default_dofdesc(self, dofdesc):
         if dofdesc.geometry is None:
@@ -492,9 +507,13 @@ class DerivativeTaker(Mapper):
     def __init__(self, ambient_axis):
         self.ambient_axis = ambient_axis
 
+    def map_constant(self, expr):
+        return 0
+
     def map_sum(self, expr):
         children = [self.rec(child) for child in expr.children]
-        if all(child is orig for child, orig in zip(children, expr.children)):
+        if all(child is orig for child, orig in zip(
+                children, expr.children, strict=True)):
             return expr
 
         from pymbolic.primitives import flattened_sum
@@ -522,9 +541,9 @@ class DerivativeTaker(Mapper):
 
     def map_int_g(self, expr):
         from sumpy.kernel import AxisTargetDerivative
-        return expr.copy(
-                target_kernel=AxisTargetDerivative(
-                    self.ambient_axis, expr.target_kernel))
+
+        target_kernel = AxisTargetDerivative(self.ambient_axis, expr.target_kernel)
+        return replace(expr, target_kernel=target_kernel)
 
 
 class DerivativeSourceAndNablaComponentCollector(
@@ -570,15 +589,15 @@ class UnregularizedPreprocessor(IdentityMapper):
             raise ValueError(
                     "Unregularized evaluation does not support one-sided limits")
 
-        expr = expr.copy(
-                qbx_forced_limit=None,
-                densities=self.rec(expr.densities),
-                kernel_arguments={
-                    name: self.rec(arg_expr)
-                    for name, arg_expr in expr.kernel_arguments.items()
-                    })
-
-        return expr
+        return replace(
+            expr,
+            qbx_forced_limit=None,
+            densities=self.rec(expr.densities),
+            kernel_arguments={
+                name: self.rec(arg_expr)
+                for name, arg_expr in expr.kernel_arguments.items()
+            }
+        )
 
 # }}}
 
@@ -626,7 +645,7 @@ class InterpolationPreprocessor(IdentityMapper):
 
     def map_int_g(self, expr):
         if expr.target.discr_stage is None:
-            expr = expr.copy(target=expr.target.to_stage1())
+            expr = replace(expr, target=expr.target.to_stage1())
 
         if expr.source.discr_stage is not None:
             return expr
@@ -638,8 +657,9 @@ class InterpolationPreprocessor(IdentityMapper):
 
         from_dd = expr.source.to_stage1()
         to_dd = from_dd.to_quad_stage2()
-        densities = [prim.interp(from_dd, to_dd, self.rec(density)) for
-            density in expr.densities]
+        densities = tuple(
+            prim.interp(from_dd, to_dd, self.rec(density)) for
+            density in expr.densities)
 
         from_dd = from_dd.copy(discr_stage=self.from_discr_stage)
         kernel_arguments = {
@@ -647,7 +667,8 @@ class InterpolationPreprocessor(IdentityMapper):
                     self.rec(self.tagger(arg_expr)))
                 for name, arg_expr in expr.kernel_arguments.items()}
 
-        return expr.copy(
+        return replace(
+                expr,
                 densities=densities,
                 kernel_arguments=kernel_arguments,
                 source=to_dd)
@@ -678,7 +699,8 @@ class QBXPreprocessor(IdentityMapper):
 
         is_self = source_discr is target_discr
 
-        expr = expr.copy(
+        expr = replace(
+                expr,
                 densities=self.rec(expr.densities),
                 kernel_arguments={
                     name: self.rec(arg_expr)
@@ -707,8 +729,8 @@ class QBXPreprocessor(IdentityMapper):
 
         if expr.qbx_forced_limit == "avg":
             return 0.5*(
-                    expr.copy(qbx_forced_limit=+1)
-                    + expr.copy(qbx_forced_limit=-1))
+                    replace(expr, qbx_forced_limit=+1)
+                    + replace(expr, qbx_forced_limit=-1))
         else:
             return expr
 
@@ -803,7 +825,8 @@ class StringifyMapper(BaseStringifyMapper):
     def map_int_g(self, expr, enclosing_prec):
         source_kernels_str = " + ".join([
             "{} * {}".format(self.rec(density, PREC_PRODUCT), source_kernel)
-            for source_kernel, density in zip(expr.source_kernels, expr.densities)
+            for source_kernel, density in zip(
+                expr.source_kernels, expr.densities, strict=True)
         ])
         target_kernel_str = str(expr.target_kernel)
         base_kernel_str = str(expr.target_kernel.get_base_kernel())

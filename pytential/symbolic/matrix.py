@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = """
 Copyright (C) 2015 Andreas Kloeckner
 Copyright (C) 2018 Alexandru Fikl
@@ -23,21 +26,52 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+__doc__ = """
+.. autoclass:: MatrixBuilderBase
+.. autoclass:: ClusterMatrixBuilderBase
+    :show-inheritance:
+
+Full Matrix Builders
+^^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: MatrixBuilder
+    :show-inheritance:
+
+.. autoclass:: P2PMatrixBuilder
+    :show-inheritance:
+
+Cluster Matrix Builders
+^^^^^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: QBXClusterMatrixBuilder
+    :show-inheritance:
+
+.. autoclass:: P2PClusterMatrixBuilder
+    :show-inheritance:
+"""
+
+from collections.abc import Sequence
+from typing import Any
+
 import numpy as np
 
 from sys import intern
 
 from pytools import memoize_method
-from arraycontext import flatten, unflatten
+from arraycontext import PyOpenCLArrayContext, flatten, unflatten
 from meshmode.dof_array import DOFArray
+from meshmode.discretization import Discretization
 
+from pytential.collection import GeometryCollection
+from pytential.linalg.utils import TargetAndSourceClusterList
+from pytential.symbolic.primitives import Variable
 from pytential.symbolic.mappers import EvaluationMapperBase
 
 
 # {{{ helpers
 
 def is_zero(x):
-    return isinstance(x, (int, float, complex, np.number)) and x == 0
+    return isinstance(x, int | float | complex | np.number) and x == 0
 
 
 def _get_layer_potential_args(actx, places, expr, context=None, include_args=None):
@@ -70,7 +104,17 @@ def _get_layer_potential_args(actx, places, expr, context=None, include_args=Non
 # {{{ base classes for matrix builders
 
 class MatrixBuilderBase(EvaluationMapperBase):
-    def __init__(self, actx, dep_expr, other_dep_exprs, dep_discr, places, context):
+    """
+    .. automethod:: __init__
+    """
+
+    def __init__(self,
+                 actx: PyOpenCLArrayContext,
+                 dep_expr: Variable,
+                 other_dep_exprs: Sequence[Variable],
+                 dep_discr: Discretization,
+                 places: GeometryCollection,
+                 context: dict[str, Any]) -> None:
         """
         :arg dep_expr: symbolic expression for the input block column
             that the builder is evaluating.
@@ -166,7 +210,7 @@ class MatrixBuilderBase(EvaluationMapperBase):
             if is_zero(rec_child):
                 return 0
 
-            if isinstance(rec_child, (np.number, int, float, complex)):
+            if isinstance(rec_child, np.number | int | float | complex):
                 vecs_and_scalars = vecs_and_scalars * rec_child
             elif isinstance(rec_child, np.ndarray):
                 if self.is_kind_matrix(rec_child):
@@ -240,17 +284,25 @@ class MatrixBuilderBase(EvaluationMapperBase):
 
 class ClusterMatrixBuilderBase(MatrixBuilderBase):
     """Evaluate individual clusters of a matrix operator, as defined by a
-    :class:`~pytential.lingla.TargetAndSourceClusterList`.
+    :class:`~pytential.linalg.TargetAndSourceClusterList`.
 
     Unlike, e.g. :class:`MatrixBuilder`, matrix cluster builders are
     significantly reduced in scope. They are basically just meant
     to evaluate linear combinations of layer potential operators.
     For example, they do not support composition of operators because we
     assume that each operator acts directly on the density.
+
+    .. automethod:: __init__
     """
 
-    def __init__(self, actx, dep_expr, other_dep_exprs,
-            dep_discr, places, tgt_src_index, context):
+    def __init__(self,
+                 actx: PyOpenCLArrayContext,
+                 dep_expr: Variable,
+                 other_dep_exprs: Sequence[Variable],
+                 dep_discr: Discretization,
+                 places: GeometryCollection,
+                 tgt_src_index: TargetAndSourceClusterList,
+                 context: dict[str, Any]) -> None:
         """
         :arg tgt_src_index: a :class:`~pytential.linalg.TargetAndSourceClusterList`
             class describing which clusters are going to be evaluated.
@@ -313,8 +365,23 @@ class MatrixBuilderDirectResamplerCacheKey:
 
 
 class MatrixBuilder(MatrixBuilderBase):
-    def __init__(self, actx, dep_expr, other_dep_exprs,
-            dep_discr, places, context, _weighted=True):
+    """A matrix builder that evaluates the full QBX-mediated operator.
+
+    .. automethod:: __init__
+    """
+
+    def __init__(self,
+                 actx: PyOpenCLArrayContext,
+                 dep_expr: Variable,
+                 other_dep_exprs: Sequence[Variable],
+                 dep_discr: Discretization,
+                 places: GeometryCollection,
+                 context: dict[str, Any],
+                 _weighted: bool = True) -> None:
+        """
+        :arg _weighted: if *True*, the quadrature weights and area elements are
+            added to the operator matrix evaluation.
+        """
         super().__init__(actx, dep_expr, other_dep_exprs, dep_discr, places, context)
         self.weighted = _weighted
 
@@ -326,7 +393,7 @@ class MatrixBuilder(MatrixBuilderBase):
         operand = self.rec(expr.operand)
         actx = self.array_context
 
-        if isinstance(operand, (int, float, complex, np.number)):
+        if isinstance(operand, int | float | complex | np.number):
             return operand
         elif isinstance(operand, np.ndarray) and operand.ndim == 1:
             conn = self.places.get_connection(expr.from_dd, expr.to_dd)
@@ -380,7 +447,7 @@ class MatrixBuilder(MatrixBuilderBase):
         assert abs(expr.qbx_forced_limit) > 0
 
         result = 0
-        for kernel, density in zip(expr.source_kernels, expr.densities):
+        for kernel, density in zip(expr.source_kernels, expr.densities, strict=True):
             rec_density = self.rec(density)
             if is_zero(rec_density):
                 continue
@@ -445,9 +512,28 @@ class MatrixBuilder(MatrixBuilderBase):
 # {{{ p2p matrix builder
 
 class P2PMatrixBuilder(MatrixBuilderBase):
-    def __init__(self, actx, dep_expr, other_dep_exprs,
-            dep_discr, places, context,
-            exclude_self=True, _weighted=False):
+    """A matrix builder that evaluates the full point-to-point kernel interactions.
+
+    .. automethod:: __init__
+    """
+
+    def __init__(self,
+                 actx: PyOpenCLArrayContext,
+                 dep_expr: Variable,
+                 other_dep_exprs: Sequence[Variable],
+                 dep_discr: Discretization,
+                 places: GeometryCollection,
+                 context: dict[str, Any],
+                 exclude_self: bool = True,
+                 _weighted: bool = False) -> None:
+        """
+        :arg exclude_self: if *True*, interactions where the source and target
+            indices are the same are ignored. This should be *True* in most
+            cases where this is possible, since the kernels are singular at those
+            points.
+        :arg _weighted: if *True*, the quadrature weights and area elements are
+            added to the operator matrix evaluation.
+        """
         super().__init__(actx, dep_expr, other_dep_exprs, dep_discr, places, context)
 
         self.exclude_self = exclude_self
@@ -463,7 +549,7 @@ class P2PMatrixBuilder(MatrixBuilderBase):
         target_base_kernel = expr.target_kernel.get_base_kernel()
 
         result = 0
-        for density, kernel in zip(expr.densities, expr.source_kernels):
+        for density, kernel in zip(expr.densities, expr.source_kernels, strict=True):
             rec_density = self.rec(density)
             if is_zero(rec_density):
                 continue
@@ -529,9 +615,26 @@ class P2PMatrixBuilder(MatrixBuilderBase):
 # {{{ cluster matrix builders
 
 class QBXClusterMatrixBuilder(ClusterMatrixBuilderBase):
-    def __init__(self, actx, dep_expr, other_dep_exprs, dep_discr,
-            places, tgt_src_index, context,
-            exclude_self=False, _weighted=True):
+    """A matrix builder that evaluates a cluster (block) using the QBX method.
+
+    .. automethod:: __init__
+    """
+
+    def __init__(self,
+                 actx: PyOpenCLArrayContext,
+                 dep_expr: Variable,
+                 other_dep_exprs: Sequence[Variable],
+                 dep_discr: Discretization,
+                 places: GeometryCollection,
+                 tgt_src_index: TargetAndSourceClusterList,
+                 context: dict[str, Any],
+                 exclude_self: bool = False,
+                 _weighted: bool = True) -> None:
+        """
+        :arg exclude_self: this argument is ignored.
+        :arg _weighted: if *True*, the quadrature weights and area elements are
+            added to the operator matrix evaluation.
+        """
         super().__init__(
             actx, dep_expr, other_dep_exprs, dep_discr, places,
             tgt_src_index, context)
@@ -553,7 +656,7 @@ class QBXClusterMatrixBuilder(ClusterMatrixBuilderBase):
         result = 0
         assert abs(expr.qbx_forced_limit) > 0
 
-        for kernel, density in zip(expr.source_kernels, expr.densities):
+        for kernel, density in zip(expr.source_kernels, expr.densities, strict=True):
             rec_density = self._inner_mapper.rec(density)
             if is_zero(rec_density):
                 continue
@@ -620,9 +723,29 @@ class QBXClusterMatrixBuilder(ClusterMatrixBuilderBase):
 
 
 class P2PClusterMatrixBuilder(ClusterMatrixBuilderBase):
-    def __init__(self, actx, dep_expr, other_dep_exprs, dep_discr,
-            places, tgt_src_index, context,
-            exclude_self=False, _weighted=False):
+    """A matrix builder that evaluates a cluster (block) point-to-point.
+
+    .. automethod:: __init__
+    """
+
+    def __init__(self,
+                 actx: PyOpenCLArrayContext,
+                 dep_expr: Variable,
+                 other_dep_exprs: Sequence[Variable],
+                 dep_discr: Discretization,
+                 places: GeometryCollection,
+                 tgt_src_index: TargetAndSourceClusterList,
+                 context: dict[str, Any],
+                 exclude_self: bool = False,
+                 _weighted: bool = False) -> None:
+        """
+        :arg exclude_self: if *True*, interactions where the source and target
+            indices are the same are ignored. This should be *True* in most
+            cases where this is possible, since the kernels are singular at those
+            points.
+        :arg _weighted: if *True*, the quadrature weights and area elements are
+            added to the operator matrix evaluation.
+        """
         super().__init__(
             actx, dep_expr, other_dep_exprs, dep_discr, places,
             tgt_src_index, context)
@@ -640,7 +763,7 @@ class P2PClusterMatrixBuilder(ClusterMatrixBuilderBase):
         target_base_kernel = expr.target_kernel.get_base_kernel()
 
         result = 0
-        for kernel, density in zip(expr.source_kernels, expr.densities):
+        for kernel, density in zip(expr.source_kernels, expr.densities, strict=True):
             rec_density = self._inner_mapper.rec(density)
             if is_zero(rec_density):
                 continue

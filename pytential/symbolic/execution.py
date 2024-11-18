@@ -23,7 +23,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from typing import Any, Dict, Hashable, List, Optional, Sequence, Tuple, Union
+from collections.abc import Hashable, Sequence
+from typing import Any
 
 from pymbolic.mapper.evaluator import (
         EvaluationMapper as PymbolicEvaluationMapper)
@@ -251,7 +252,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
                  list, np.ndarray, DOFArray)):
             conn = self.places.get_connection(expr.from_dd, expr.to_dd)
             return conn(operand)
-        elif isinstance(operand, (int, float, complex, np.number)):
+        elif isinstance(operand, int | float | complex | np.number):
             return operand
         else:
             raise TypeError(f"cannot interpolate '{type(operand).__name__}'")
@@ -324,7 +325,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper):
 
     def exec_assign(self, actx: PyOpenCLArrayContext, insn, bound_expr, evaluate):
         return [(name, evaluate(expr))
-                for name, expr in zip(insn.names, insn.exprs)]
+                for name, expr in zip(insn.names, insn.exprs, strict=True)]
 
     def exec_compute_potential_insn(
             self, actx: PyOpenCLArrayContext, insn, bound_expr, evaluate):
@@ -485,7 +486,7 @@ class MatVecOp:
 
         from arraycontext import flatten
         result = self.array_context.zeros(self.total_dofs, self.dtype)
-        for res_i, (start, end) in zip(ary, self.starts_and_ends):
+        for res_i, (start, end) in zip(ary, self.starts_and_ends, strict=True):
             result[start:end] = flatten(res_i, self.array_context)
 
         return result
@@ -493,7 +494,7 @@ class MatVecOp:
     def unflatten(self, ary):
         # Convert a flat version of *ary* into a structured version.
         components = []
-        for discr, (start, end) in zip(self.discrs, self.starts_and_ends):
+        for discr, (start, end) in zip(self.discrs, self.starts_and_ends, strict=True):
             component = ary[start:end]
 
             from meshmode.discretization import Discretization
@@ -553,8 +554,8 @@ class MatVecOp:
 def _prepare_domains(
             nresults: int,
             places: GeometryCollection,
-            domains: Optional[Union[DOFDescriptorLike, Sequence[DOFDescriptorLike]]],
-            default_domain: Optional[DOFDescriptorLike]) -> List[DOFDescriptor]:
+            domains: DOFDescriptorLike | Sequence[DOFDescriptorLike] | None,
+            default_domain: DOFDescriptorLike | None) -> list[DOFDescriptor]:
     """
     :arg nresults: number of results.
     :arg places: a :class:`~pytential.collection.GeometryCollection`.
@@ -568,7 +569,7 @@ def _prepare_domains(
     """
     if domains is None:
         return nresults * [sym.as_dofdesc(default_domain)]
-    elif not isinstance(domains, (list, tuple)):
+    elif not isinstance(domains, list | tuple):
         return nresults * [sym.as_dofdesc(domains)]
     else:
         assert len(domains) == nresults
@@ -577,8 +578,8 @@ def _prepare_domains(
 
 def _prepare_auto_where(
             auto_where: AutoWhereLike,
-            places: Optional[GeometryCollection] = None,
-            ) -> Tuple[DOFDescriptor, DOFDescriptor]:
+            places: GeometryCollection | None = None,
+            ) -> tuple[DOFDescriptor, DOFDescriptor]:
     """
     :arg places: a :class:`pytential.collection.GeometryCollection`,
         whose :attr:`pytential.collection.GeometryCollection.auto_where` is
@@ -594,7 +595,7 @@ def _prepare_auto_where(
             auto_target: Hashable = _UNNAMED_TARGET
         else:
             auto_source, auto_target = places.auto_where
-    elif isinstance(auto_where, (list, tuple)):
+    elif isinstance(auto_where, list | tuple):
         auto_source, auto_target = auto_where
     else:
         auto_source = auto_where
@@ -613,9 +614,9 @@ def _prepare_expr(places, expr, auto_where=None):
 
     from pytential.source import LayerPotentialSourceBase
     from pytential.symbolic.mappers import (
-            ToTargetTagger,
-            DerivativeBinder)
+            ToTargetTagger, DerivativeBinder, flatten)
 
+    expr = flatten(expr)
     auto_source, auto_target = _prepare_auto_where(auto_where, places=places)
     expr = ToTargetTagger(auto_source, auto_target)(expr)
     expr = DerivativeBinder()(expr)
@@ -675,8 +676,8 @@ def execute(code: Code, exec_mapper, pre_assign_check=None) -> np.ndarray:
 # {{{ bound expression
 
 def _find_array_context_from_args_in_context(
-        context: Dict[str, Any],
-        supplied_array_context: Optional[PyOpenCLArrayContext] = None,
+        context: dict[str, Any],
+        supplied_array_context: PyOpenCLArrayContext | None = None,
         ) -> PyOpenCLArrayContext:
     from arraycontext import PyOpenCLArrayContext
     array_contexts = []
@@ -829,7 +830,7 @@ class BoundExpression:
                 arg_name, dtype, total_dofs, discrs, starts_and_ends, extra_args)
 
     def eval(self, context=None, timing_data=None,
-            array_context: Optional[PyOpenCLArrayContext] = None):
+            array_context: PyOpenCLArrayContext | None = None):
         """Evaluate the expression in *self*, using the
         input variables given in the dictionary *context*.
 

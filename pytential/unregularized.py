@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import numpy as np
 
@@ -180,7 +180,7 @@ class UnregularizedLayerPotentialSource(LayerPotentialSourceBase):
 
             results.append((o.name, result))
 
-        timing_data: Dict[str, Any] = {}
+        timing_data: dict[str, Any] = {}
         return results, timing_data
 
     # {{{ fmm-based execution
@@ -223,7 +223,7 @@ class UnregularizedLayerPotentialSource(LayerPotentialSourceBase):
         from pytential.collection import GeometryLike
 
         target_name_to_index = {}
-        targets: Tuple[GeometryLike, ...] = ()
+        targets: tuple[GeometryLike, ...] = ()
 
         for o in insn.outputs:
             assert o.qbx_forced_limit not in (-1, 1)
@@ -297,7 +297,7 @@ class UnregularizedLayerPotentialSource(LayerPotentialSourceBase):
 
         # }}}
 
-        timing_data: Dict[str, Any] = {}
+        timing_data: dict[str, Any] = {}
         return results, timing_data
 
     # }}}
@@ -454,7 +454,8 @@ class _FMMGeometryData:
                 (lpot_src.ambient_dim, ntargets),
                 self.coord_dtype)
 
-        for start, target_discr in zip(target_discr_starts, target_discrs):
+        for start, target_discr in zip(target_discr_starts[:-1],
+                                       target_discrs, strict=True):
             code_getter.copy_targets_kernel()(actx.queue,
                     targets=targets[:, start:start+target_discr.ndofs],
                     points=flatten(
