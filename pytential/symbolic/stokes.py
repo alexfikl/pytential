@@ -304,7 +304,7 @@ class _StokesletWrapperNaiveOrBiharmonic(StokesletWrapperBase):
 
         for i in range(dim):
             for j in range(i, dim):
-                self.kernel_dict[(i, j)] = ElasticityKernel(dim=dim, icomp=i,
+                self.kernel_dict[i, j] = ElasticityKernel(dim=dim, icomp=i,
                     jcomp=j, poisson_ratio=poisson_ratio)
 
         # The dictionary allows us to exploit symmetry -- that
@@ -312,7 +312,7 @@ class _StokesletWrapperNaiveOrBiharmonic(StokesletWrapperBase):
         # multiple expansions for the same kernel in a different ordering.
         for i in range(dim):
             for j in range(i):
-                self.kernel_dict[(i, j)] = self.kernel_dict[(j, i)]
+                self.kernel_dict[i, j] = self.kernel_dict[j, i]
 
     def get_int_g(self, idx, density_sym, dir_vec_sym, qbx_forced_limit,
             deriv_dirs):
@@ -400,7 +400,7 @@ class _StressletWrapperNaiveOrBiharmonic(StressletWrapperBase):
         for i in range(dim):
             for j in range(i, dim):
                 for k in range(j, dim):
-                    self.kernel_dict[(i, j, k)] = StressletKernel(dim=dim, icomp=i,
+                    self.kernel_dict[i, j, k] = StressletKernel(dim=dim, icomp=i,
                             jcomp=j, kcomp=k)
 
         # The dictionary allows us to exploit symmetry -- that
@@ -412,7 +412,7 @@ class _StressletWrapperNaiveOrBiharmonic(StressletWrapperBase):
                     if (i, j, k) in self.kernel_dict:
                         continue
                     s = tuple(sorted([i, j, k]))
-                    self.kernel_dict[(i, j, k)] = self.kernel_dict[s]
+                    self.kernel_dict[i, j, k] = self.kernel_dict[s]
 
         # For elasticity (nu != 0.5), we need the LaplaceKernel
         self.kernel_dict["laplace"] = LaplaceKernel(self.dim)
@@ -438,9 +438,11 @@ class _StressletWrapperNaiveOrBiharmonic(StressletWrapperBase):
             coeffs[-1] = 0
 
         result = 0
-        for kernel_idx, dir_vec_idx, coeff, extra_deriv_dirs in \
-                zip(kernel_indices, dir_vec_indices, coeffs,
-                        extra_deriv_dirs_vec):
+        for kernel_idx, dir_vec_idx, coeff, extra_deriv_dirs in zip(
+                kernel_indices,
+                dir_vec_indices,
+                coeffs,
+                extra_deriv_dirs_vec, strict=True):
             knl = self.kernel_dict[kernel_idx]
             result += _create_int_g(knl, tuple(deriv_dirs) + tuple(extra_deriv_dirs),
                     density=density_sym*dir_vec_sym[dir_vec_idx],
@@ -685,8 +687,10 @@ class StokesletWrapper(StokesletWrapperBase):
     def __new__(cls, dim=None, mu_sym=_MU_SYM_DEFAULT, nu_sym=0.5, method=None):
         if method is None:
             import warnings
-            warnings.warn("method argument not given. falling back to 'naive'"
-                    "method argument will be required in the future.")
+            warnings.warn(
+                    "method argument not given. falling back to 'naive'"
+                    "method argument will be required in the future.",
+                    stacklevel=2)
             method = "naive"
         if method == "naive":
             return StokesletWrapperNaive(dim=dim, mu_sym=mu_sym, nu_sym=nu_sym)
@@ -709,8 +713,10 @@ class StressletWrapper(StressletWrapperBase):
     def __new__(cls, dim=None, mu_sym=_MU_SYM_DEFAULT, nu_sym=0.5, method=None):
         if method is None:
             import warnings
-            warnings.warn("method argument not given. falling back to 'naive'"
-                    "method argument will be required in the future.")
+            warnings.warn(
+                    "method argument not given. falling back to 'naive'"
+                    "method argument will be required in the future.",
+                    stacklevel=2)
             method = "naive"
         if method == "naive":
             return StressletWrapperNaive(dim=dim, mu_sym=mu_sym, nu_sym=nu_sym)

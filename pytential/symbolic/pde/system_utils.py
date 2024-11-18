@@ -168,7 +168,7 @@ def convert_target_multiplier_to_source(int_g):
     ds = sympy.symbols(f"d0:{knl.dim}")
     sources = sympy.symbols(f"y0:{knl.dim}")
     # instead of just x, we use x = (d + y)
-    targets = [d + source for d, source in zip(ds, sources)]
+    targets = [d + source for d, source in zip(ds, sources, strict=True)]
     orig_expr = sympy.Function("f")(*ds)  # pylint: disable=not-callable
     expr = orig_expr
     found = False
@@ -238,7 +238,7 @@ def _multiply_int_g(int_g, expr_multiplier, density_multiplier):
             int_g.kernel_arguments)
     conv = SympyToPymbolicMapper()
 
-    for knl, density in zip(int_g.source_kernels, int_g.densities):
+    for knl, density in zip(int_g.source_kernels, int_g.densities, strict=True):
         if expr_multiplier == 1:
             new_knl = knl.get_base_kernel()
         else:
@@ -255,7 +255,7 @@ def _multiply_int_g(int_g, expr_multiplier, density_multiplier):
 
 def convert_int_g_to_base(int_g, base_kernel):
     result = 0
-    for knl, density in zip(int_g.source_kernels, int_g.densities):
+    for knl, density in zip(int_g.source_kernels, int_g.densities, strict=True):
         result += _convert_int_g_to_base(
                 int_g.copy(source_kernels=(knl,), densities=(density,)),
                 base_kernel)
@@ -267,7 +267,8 @@ def _convert_int_g_to_base(int_g, base_kernel):
     dim = target_kernel.dim
 
     result = 0
-    for density, source_kernel in zip(int_g.densities, int_g.source_kernels):
+    for density, source_kernel in zip(int_g.densities, int_g.source_kernels,
+                                      strict=True):
         deriv_relation = get_deriv_relation_kernel(source_kernel.get_base_kernel(),
             base_kernel, hashable_kernel_arguments=(
                 hashable_kernel_args(int_g.kernel_arguments)))
@@ -328,7 +329,7 @@ def get_deriv_relation_kernel(kernel, base_kernel, tol=1e-10, order=None,
     vec = []
     for i in range(len(mis)):
         vec.append(evalf(expr.xreplace(
-            dict(zip(sym_vec, rand[:, i]))
+            dict(zip(sym_vec, rand[:, i], strict=True))
             )))
     vec = sym.Matrix(vec)
     result = []
@@ -398,7 +399,7 @@ def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
                 if nderivs == 0:
                     continue
                 expr = expr.diff(sym_vec[var_idx], nderivs)
-            replace_dict = dict(zip(sym_vec, rand[:, rand_vec_idx]))
+            replace_dict = dict(zip(sym_vec, rand[:, rand_vec_idx], strict=True))
             eval_expr = evalf(expr.xreplace(replace_dict))
             row.append(eval_expr)
         row.append(1)
@@ -612,7 +613,7 @@ def merge_int_g_exprs(exprs, source_dependent_variables=None):
         reduced_insns = reduce_number_of_fmms(insns_to_reduce,
                 source_dependent_variables)
 
-        for insn, reduced_insn in zip(insns_to_reduce, reduced_insns):
+        for insn, reduced_insn in zip(insns_to_reduce, reduced_insns, strict=True):
             for int_g in targetless_int_g_mapping[insn]:
                 replacements[int_g] = restore_target_attributes(reduced_insn, int_g)
 
@@ -829,7 +830,8 @@ def convert_directional_source_to_axis_source(int_g):
     """
     source_kernels = []
     densities = []
-    for source_kernel, density in zip(int_g.source_kernels, int_g.densities):
+    for source_kernel, density in zip(int_g.source_kernels, int_g.densities,
+                                      strict=True):
         knl_result = _convert_directional_source_knl_to_axis_source(source_kernel,
                         int_g.kernel_arguments)
         for knl, coeff in knl_result:
@@ -941,7 +943,7 @@ if __name__ == "__main__":
     from sumpy.kernel import (StokesletKernel, BiharmonicKernel,  # noqa:F401
         StressletKernel, ElasticityKernel, LaplaceKernel)
     base_kernel = BiharmonicKernel(3)
-    #base_kernel = LaplaceKernel(3)
+    # base_kernel = LaplaceKernel(3)
     kernels = [StokesletKernel(3, 0, 2), StokesletKernel(3, 0, 0)]
     kernels += [StressletKernel(3, 0, 0, 0), StressletKernel(3, 0, 0, 1),
             StressletKernel(3, 0, 0, 2), StressletKernel(3, 0, 1, 2)]

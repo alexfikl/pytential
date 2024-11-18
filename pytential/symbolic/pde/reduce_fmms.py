@@ -237,7 +237,8 @@ def _create_matrix(int_gs, source_dependent_variables, axis_vars):
 
     for int_g in int_gs:
         row = [0]*len(source_exprs)
-        for density, source_kernel in zip(int_g.densities, int_g.source_kernels):
+        for density, source_kernel in zip(int_g.densities, int_g.source_kernels,
+                                          strict=True):
             d = coefficient_collector(density)
             for source_expr, coeff in d.items():
                 if source_expr not in source_exprs:

@@ -929,7 +929,7 @@ def bind(places, expr, auto_where=None, _merge_exprs=True):
         fmmlib = any(value.fmm_backend == "fmmlib" for value
             in places.places.values() if isinstance(value, QBXLayerPotentialSource))
         if not fmmlib:
-            if isinstance(expr, (np.ndarray, list, tuple)):
+            if isinstance(expr, np.ndarray | list | tuple):
                 expr = np.array(merge_int_g_exprs(list(expr)), dtype=object)
             elif isinstance(expr, Expression):
                 expr = merge_int_g_exprs([expr])[0]
