@@ -51,7 +51,7 @@ from pymbolic.geometric_algebra.mapper import (
         as DerivativeSourceFinderBase,
 
         GraphvizMapper as GraphvizMapperBase)
-from pymbolic.typing import ExpressionT
+from pymbolic.typing import Expression
 import pytential.symbolic.primitives as prim
 
 
@@ -61,7 +61,7 @@ def rec_int_g_arguments(mapper, expr):
             name: mapper.rec(arg) for name, arg in expr.kernel_arguments.items()
             }
 
-    changed = (
+    changed = not (
             all(d is orig for d, orig in zip(densities, expr.densities, strict=True))
             and all(
                 arg is orig for arg, orig in zip(
@@ -291,7 +291,7 @@ def flatten(expr):
 
 # {{{ LocationTagger
 
-class LocationTagger(CSECachingMapperMixin[ExpressionT, []],
+class LocationTagger(CSECachingMapperMixin[Expression, []],
                      IdentityMapper):
     """Used internally by :class:`ToTargetTagger`."""
 
@@ -299,7 +299,7 @@ class LocationTagger(CSECachingMapperMixin[ExpressionT, []],
         self.default_source = default_source
         self.default_target = default_target
 
-    def map_common_subexpression_uncached(self, expr) -> ExpressionT:
+    def map_common_subexpression_uncached(self, expr) -> Expression:
         # Mypy 1.13 complains about this:
         # error: Too few arguments for "map_common_subexpression" of "IdentityMapper"  [call-arg]  # noqa: E501
         # error: Argument 1 to "map_common_subexpression" of "IdentityMapper" has incompatible type "LocationTagger"; expected "IdentityMapper[P]"  [arg-type]  # noqa: E501
@@ -641,7 +641,7 @@ class InterpolationPreprocessor(IdentityMapper):
             return expr
 
         from_dd = to_dd.copy(discr_stage=self.from_discr_stage)
-        return prim.interp(from_dd, to_dd, self.rec(self.tagger(expr)))
+        return prim.interpolate(self.rec(self.tagger(expr)), from_dd, to_dd)
 
     def map_int_g(self, expr):
         if expr.target.discr_stage is None:
@@ -658,13 +658,12 @@ class InterpolationPreprocessor(IdentityMapper):
         from_dd = expr.source.to_stage1()
         to_dd = from_dd.to_quad_stage2()
         densities = tuple(
-            prim.interp(from_dd, to_dd, self.rec(density)) for
-            density in expr.densities)
+            prim.interpolate(self.rec(density), from_dd, to_dd)
+            for density in expr.densities)
 
         from_dd = from_dd.copy(discr_stage=self.from_discr_stage)
         kernel_arguments = {
-                name: prim.interp(from_dd, to_dd,
-                    self.rec(self.tagger(arg_expr)))
+                name: prim.interpolate(self.rec(self.tagger(arg_expr)), from_dd, to_dd)
                 for name, arg_expr in expr.kernel_arguments.items()}
 
         return replace(

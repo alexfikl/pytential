@@ -20,16 +20,18 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from collections.abc import Callable, Iterable
 from dataclasses import field
 from warnings import warn
 from functools import partial
-from typing import Any, Literal, Union
+from typing import Any, Concatenate, Literal, TypeAlias, TypeVar
 
 import numpy as np
 
 import modepy as mp
+from pymbolic import ExpressionNode, Variable
 from pymbolic.primitives import (  # noqa: N813
-        Expression as ExpressionBase, Variable, Variable as var,
+        Variable as var,
         cse_scope as cse_scope_base,
         make_common_subexpression as cse,
         expr_dataclass)
@@ -37,7 +39,9 @@ from pymbolic.geometric_algebra import MultiVector, componentwise
 from pymbolic.geometric_algebra.primitives import (
         NablaComponent, Derivative as DerivativeBase)
 from pymbolic.primitives import make_sym_vector
+from pymbolic.typing import ArithmeticExpression
 
+from pytools import P
 from pytools.obj_array import make_obj_array, flat_obj_array
 from sumpy.kernel import Kernel, SpatialConstant
 
@@ -93,6 +97,20 @@ associated with a :class:`~meshmode.discretization.Discretization`, then
     :show-inheritance:
     :undoc-members:
     :members: mapper_method
+
+.. autofunction:: for_each_expression
+
+.. autoclass:: Operand
+
+.. autoclass:: ArithmeticExpressionT
+
+.. class:: P
+
+    See :class:`pytools.P`
+
+.. class:: ExpressionNode
+
+    See :class:`pymbolic.ExpressionNode`.
 
 Diagnostics
 ^^^^^^^^^^^
@@ -190,29 +208,43 @@ Elementary numerics
     :undoc-members:
     :members: mapper_method
 
+.. autofunction:: num_reference_derivative
+
 .. autoclass:: NodeSum
     :undoc-members:
     :members: mapper_method
+
+.. autofunction:: node_sum
 
 .. autoclass:: NodeMax
     :undoc-members:
     :members: mapper_method
 
+.. autofunction:: node_max
+
 .. autoclass:: NodeMin
     :undoc-members:
     :members: mapper_method
+
+.. autofunction:: node_min
 
 .. autoclass:: ElementwiseSum
     :undoc-members:
     :members: mapper_method
 
+.. autofunction:: elementwise_sum
+
 .. autoclass:: ElementwiseMin
     :undoc-members:
     :members: mapper_method
 
+.. autofunction:: elementwise_min
+
 .. autoclass:: ElementwiseMax
     :undoc-members:
     :members: mapper_method
+
+.. autofunction:: elementwise_max
 
 .. autofunction:: integral
 
@@ -239,7 +271,7 @@ Operators
     :undoc-members:
     :members: mapper_method
 
-.. autofunction:: interp
+.. autofunction:: interpolate
 
 Geometric Calculus (based on Geometric/Clifford Algebra)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -319,7 +351,7 @@ __all__ = (
     "ElementwiseMax", "integral", "Ones", "ones_vec", "area", "mean",
     "IterativeInverse",
 
-    "Interpolation", "interp",
+    "Interpolation", "interpolate",
 
     "Derivative",
 
@@ -347,8 +379,26 @@ __all__ = (
     )
 
 
-Operand = Union["Expression", np.ndarray, MultiVector]
+# {{{ helpers
+
+
+@expr_dataclass()
+class Expression(ExpressionNode):
+    """A subclass of :class:`pymbolic.primitives.ExpressionNode` for use with
+    :mod:`pytential` mappers.
+    """
+
+    def make_stringifier(self, originating_stringifier=None):
+        from pytential.symbolic.mappers import StringifyMapper
+        return StringifyMapper()
+
+
+Operand: TypeAlias = (
+    ArithmeticExpression | np.ndarray[Any, np.dtype[Any]] | MultiVector)
 QBXForcedLimit = int | Literal["avg"] | None
+
+# NOTE: this will likely live in pymbolic at some point, but for now we take it!
+ArithmeticExpressionT = TypeVar("ArithmeticExpressionT", bound=ArithmeticExpression)
 
 
 class _NoArgSentinel:
@@ -359,30 +409,29 @@ class cse_scope(cse_scope_base):  # noqa: N801
     DISCRETIZATION = "pytential_discretization"
 
 
-# {{{ helper functions
-
-def array_to_tuple(ary):
-    """This function is typically used to make :class:`numpy.ndarray`
-    instances hashable by converting them to tuples.
+def for_each_expression(
+        f: Callable[Concatenate[ArithmeticExpression, P], ArithmeticExpression]
+        ) -> Callable[Concatenate[Operand, P], Operand]:
+    """A decorator that takes a function that can only work on expressions
+    and transforms it into a function that can be applied componentwise on
+    :class:`numpy.ndarray` or :class:`~pymbolic.geometric_algebra.MultiVector`.
     """
 
-    if isinstance(ary, np.ndarray):
-        return tuple(ary)
-    else:
-        return ary
+    from functools import wraps
+
+    @wraps(f)
+    def wrapper(operand: Operand, *args: P.args, **kwargs: P.kwargs) -> Operand:
+        if isinstance(operand, np.ndarray | MultiVector):
+            def func(operand_i: ArithmeticExpression) -> ArithmeticExpression:
+                return f(operand_i, *args, **kwargs)
+
+            return componentwise(func, operand)
+        else:
+            return f(operand, *args, **kwargs)
+
+    return wrapper
 
 # }}}
-
-
-@expr_dataclass()
-class Expression(ExpressionBase):
-    """A subclass of :class:`pymbolic.primitives.Expression` for use with
-    :mod:`pytential` mappers.
-    """
-
-    def make_stringifier(self, originating_stringifier=None):
-        from pytential.symbolic.mappers import StringifyMapper
-        return StringifyMapper()
 
 
 @expr_dataclass()
@@ -520,7 +569,9 @@ class NodeCoordinateComponent(DiscretizationProperty):
     """The axis index this node coordinate represents, i.e. 0 for $x$, etc."""
 
     # FIXME: this is added for backwards compatibility with pre-dataclass expressions
-    def __init__(self, ambient_axis: int, dofdesc: DOFDescriptorLike) -> None:
+    def __init__(self,
+                 ambient_axis: int,
+                 dofdesc: DOFDescriptorLike | None = None) -> None:
         object.__setattr__(self, "ambient_axis", ambient_axis)
         super().__init__(dofdesc)   # type: ignore[arg-type]
 
@@ -560,11 +611,20 @@ class NumReferenceDerivative(DiscretizationProperty):
                 operand: Operand | None = None,
                 dofdesc: DOFDescriptor | None = None,
                 ) -> "NumReferenceDerivative":
-        # If the constructor is handed a multivector object, return an
-        # object array of the operator applied to each of the
-        # coefficients in the multivector.
+        if isinstance(ref_axes, int):
+            warn(f"Passing an 'int' as 'ref_axes' to {cls.__name__!r} "
+                 "is deprecated and will result in an error in 2025. Pass the "
+                 "well-formatted tuple '((ref_axes, 1),)' instead.",
+                 DeprecationWarning, stacklevel=2)
 
-        if isinstance(operand, np.ndarray):
+            ref_axes = ((ref_axes, 1),)
+
+        if isinstance(operand, np.ndarray | MultiVector):
+            warn(f"Passing {type(operand)} directly to {cls.__name__!r} "
+                 "is deprecated and will result in an error from 2025. Use "
+                 "the 'num_reference_derivative' function instead.",
+                 DeprecationWarning, stacklevel=3)
+
             def make_op(operand_i):
                 return cls(ref_axes, operand_i, as_dofdesc(dofdesc))
 
@@ -574,35 +634,46 @@ class NumReferenceDerivative(DiscretizationProperty):
         else:
             return DiscretizationProperty.__new__(cls)
 
-    # FIXME: this is added for backwards compatibility with pre-dataclass expressions
+    # FIXME: this is added for backwards compatibility with pre-dataclass expressions.
+    # Ideally, we'd just have a __post_init__, but the order of the arguments is
+    # different..
     def __init__(self,
                  ref_axes: tuple[tuple[int, int], ...],
-                 operand: Expression,
+                 operand: ArithmeticExpression,
                  dofdesc: DOFDescriptorLike) -> None:
+        if not isinstance(ref_axes, tuple):
+            raise ValueError(f"'ref_axes' must be a tuple: {type(ref_axes)}")
+
+        if tuple(sorted(ref_axes)) != ref_axes:
+            raise ValueError(
+                f"'ref_axes' must be sorted by axis index: {ref_axes}"
+            )
+
+        if len(dict(ref_axes)) != len(ref_axes):
+            raise ValueError(
+                f"'ref_axes' must not contain an axis more than once: {ref_axes}"
+            )
+
         object.__setattr__(self, "ref_axes", ref_axes)
         object.__setattr__(self, "operand", operand)
         super().__init__(dofdesc)   # type: ignore[arg-type]
 
-        if isinstance(self.ref_axes, int):
-            warn(f"Passing an 'int' as 'ref_axes' to {type(self).__name__!r} "
-                 "is deprecated and will be removed in 2025. Pass the "
-                 "well-formatted tuple '((ref_axes, 1),)' instead.",
-                 DeprecationWarning, stacklevel=2)
 
-            object.__setattr__(self, "ref_axes", ((self.ref_axes, 1),))
+@for_each_expression
+def num_reference_derivative(
+        expr: ArithmeticExpression,
+        ref_axes: tuple[tuple[int, int], ...] | int,
+        dofdesc: DOFDescriptorLike | None) -> NumReferenceDerivative:
+    """Take a derivative of *expr* with respect to the the element reference
+    coordinates.
 
-        if not isinstance(self.ref_axes, tuple):
-            raise ValueError(f"'ref_axes' must be a tuple: {type(self)}")
+    See :class:`~pytential.symbolic.primitives.NumReferenceDerivative`.
+    """
 
-        if tuple(sorted(self.ref_axes)) != self.ref_axes:
-            raise ValueError(
-                f"'ref_axes' must be sorted by axis index: {self.ref_axes}"
-            )
+    if isinstance(ref_axes, int):
+        ref_axes = ((ref_axes, 1),)
 
-        if len(dict(self.ref_axes)) != len(self.ref_axes):
-            raise ValueError(
-                f"'ref_axes' must not contain an axis more than once: {self.ref_axes}"
-            )
+    return NumReferenceDerivative(ref_axes, expr, as_dofdesc(dofdesc))
 
 
 def reference_jacobian(func, output_dim, dim, dofdesc=None):
@@ -615,7 +686,7 @@ def reference_jacobian(func, output_dim, dim, dofdesc=None):
     for i in range(output_dim):
         func_component = func[i]
         for j in range(dim):
-            jac[i, j] = NumReferenceDerivative(((j, 1),), func_component, dofdesc)
+            jac[i, j] = num_reference_derivative(func_component, j, dofdesc)
 
     return jac
 
@@ -743,11 +814,9 @@ def second_fundamental_form(ambient_dim, dim=None, dofdesc=None):
 
     # https://en.wikipedia.org/w/index.php?title=Second_fundamental_form&oldid=821047433#Classical_notation
 
-    from functools import partial
-    d = partial(NumReferenceDerivative, dofdesc=dofdesc)
-    ruu = d(((0, 2),), r)
-    ruv = d(((0, 1), (1, 1)), r)
-    rvv = d(((1, 2),), r)
+    ruu = num_reference_derivative(r, ((0, 2),), dofdesc)
+    ruv = num_reference_derivative(r, ((0, 1), (1, 1)), dofdesc)
+    rvv = num_reference_derivative(r, ((1, 2),), dofdesc)
 
     nrml = normal(ambient_dim, dim, dofdesc).as_vector()
 
@@ -791,9 +860,9 @@ def _element_size(ambient_dim, dim=None, dofdesc=None):
     if dim is None:
         dim = ambient_dim - 1
 
-    return ElementwiseSum(
-            area_element(ambient_dim=ambient_dim, dim=dim)
-            * QWeight())**(1/dim)
+    return elementwise_sum(
+            area_element(ambient_dim=ambient_dim, dim=dim) * QWeight(),
+            dofdesc)**(1/dim)
 
 
 def _small_mat_inverse(mat):
@@ -1021,7 +1090,7 @@ def _quad_resolution(ambient_dim, dim=None, granularity=None, dofdesc=None):
     to_dd = from_dd.copy(granularity=granularity)
 
     stretch = _mapping_max_stretch_factor(ambient_dim, dim=dim, dofdesc=from_dd)
-    return interp(from_dd, to_dd, stretch)
+    return interpolate(stretch, from_dd, to_dd)
 
 
 def _source_danger_zone_radii(ambient_dim, dim=None,
@@ -1075,7 +1144,7 @@ def interleaved_expansion_centers(ambient_dim, dim=None, dofdesc=None):
 
     source = as_dofdesc(dofdesc)
     target = source.copy(granularity=GRANULARITY_CENTER)
-    return interp(source, target, centers)
+    return interpolate(centers, source, target)
 
 
 def h_max(ambient_dim, dim=None, dofdesc=None):
@@ -1136,10 +1205,14 @@ class Interpolation(Expression):
         to_dd = as_dofdesc(to_dd)
 
         if from_dd == to_dd:
-            # FIXME: __new__ should return a class instance
             return operand  # type: ignore[return-value]
 
-        if isinstance(operand, np.ndarray):
+        if isinstance(operand, np.ndarray | MultiVector):
+            warn(f"Passing {type(operand)} directly to {cls.__name__!r} "
+                 "is deprecated and will result in an error from 2025. Use "
+                 "the 'interpolate' function instead.",
+                 DeprecationWarning, stacklevel=3)
+
             def make_op(operand_i):
                 return cls(from_dd, to_dd, operand_i)
 
@@ -1166,7 +1239,24 @@ class Interpolation(Expression):
 
 
 def interp(from_dd, to_dd, operand):
+    warn("Calling 'interp' is deprecated and it will be removed in 2025. Use "
+         "'interpolate' instead (has a different argument order).",
+         DeprecationWarning, stacklevel=2)
+
     return Interpolation(as_dofdesc(from_dd), as_dofdesc(to_dd), operand)
+
+
+@for_each_expression
+def interpolate(operand: ArithmeticExpressionT,
+                from_dd: DOFDescriptorLike,
+                to_dd: DOFDescriptorLike) -> ArithmeticExpressionT | Interpolation:
+    from_dd = as_dofdesc(from_dd)
+    to_dd = as_dofdesc(to_dd)
+
+    if from_dd == to_dd:
+        return operand
+
+    return Interpolation(from_dd, to_dd, operand)
 
 
 @expr_dataclass()
@@ -1180,11 +1270,13 @@ class SingleScalarOperandExpression(Expression):
 
     def __new__(cls,
                 operand: Operand | None = None) -> "SingleScalarOperandExpression":
-        # If the constructor is handed a multivector object, return an
-        # object array of the operator applied to each of the
-        # coefficients in the multivector.
-
         if isinstance(operand, np.ndarray | MultiVector):
+            name = cls.mapper_method[4:]
+            warn(f"Passing {type(operand)} directly to {cls.__name__!r} "
+                 "is deprecated and will result in an error from 2025. Use "
+                 f"the '{name}' function instead.",
+                 DeprecationWarning, stacklevel=3)
+
             def make_op(operand_i):
                 return cls(operand_i)
 
@@ -1201,12 +1293,22 @@ class NodeSum(SingleScalarOperandExpression):
     """
 
 
+@for_each_expression
+def node_sum(expr: ArithmeticExpression) -> NodeSum:
+    return NodeSum(expr)
+
+
 @expr_dataclass()
 class NodeMax(SingleScalarOperandExpression):
     """Bases: :class:`~pytential.symbolic.primitives.Expression`.
 
     Implements a global maximum over all discretization nodes.
     """
+
+
+@for_each_expression
+def node_max(expr: ArithmeticExpression) -> NodeMax:
+    return NodeMax(expr)
 
 
 @expr_dataclass()
@@ -1217,11 +1319,16 @@ class NodeMin(SingleScalarOperandExpression):
     """
 
 
+@for_each_expression
+def node_min(expr: ArithmeticExpression) -> NodeMin:
+    return NodeMin(expr)
+
+
 def integral(ambient_dim, dim, operand, dofdesc=None):
     """A volume integral of *operand*."""
 
     dofdesc = as_dofdesc(dofdesc)
-    return NodeSum(
+    return node_sum(
             area_element(ambient_dim, dim, dofdesc)
             * QWeight(dofdesc)
             * operand)
@@ -1236,18 +1343,22 @@ class SingleScalarOperandExpressionWithWhere(Expression):
 
     operand: Operand
     """An expression or an array on which to apply the operation."""
-    dofdesc: DOFDescriptor
+
+    # pylint: disable-next=invalid-field-call
+    dofdesc: DOFDescriptor = field(default_factory=lambda: DEFAULT_DOFDESC)
     """The descriptor for the geometry where the *operand* is defined."""
 
     def __new__(cls,
                 operand: Operand | None = None,
                 dofdesc: DOFDescriptorLike | None = None,
                 ) -> "SingleScalarOperandExpressionWithWhere":
-        # If the constructor is handed a multivector object, return an
-        # object array of the operator applied to each of the
-        # coefficients in the multivector.
-
         if isinstance(operand, np.ndarray | MultiVector):
+            name = cls.mapper_method[4:]
+            warn(f"Passing {type(operand)} directly to {cls.__name__!r} "
+                 "is deprecated and will result in an error from 2025. Use "
+                 f"the '{name}' function instead.",
+                 DeprecationWarning, stacklevel=2)
+
             def make_op(operand_i):
                 return cls(operand_i, as_dofdesc(dofdesc))
 
@@ -1274,6 +1385,12 @@ class ElementwiseSum(SingleScalarOperandExpressionWithWhere):
     """
 
 
+@for_each_expression
+def elementwise_sum(expr: ArithmeticExpression,
+                    dofdesc: DOFDescriptorLike = None) -> ElementwiseSum:
+    return ElementwiseSum(expr, as_dofdesc(dofdesc))
+
+
 @expr_dataclass()
 class ElementwiseMin(SingleScalarOperandExpressionWithWhere):
     """Bases: :class:`~pytential.symbolic.primitives.Expression`.
@@ -1283,6 +1400,12 @@ class ElementwiseMin(SingleScalarOperandExpressionWithWhere):
     """
 
 
+@for_each_expression
+def elementwise_min(expr: ArithmeticExpression,
+                    dofdesc: DOFDescriptorLike = None) -> ElementwiseMin:
+    return ElementwiseMin(expr, as_dofdesc(dofdesc))
+
+
 @expr_dataclass()
 class ElementwiseMax(SingleScalarOperandExpressionWithWhere):
     """Bases: :class:`~pytential.symbolic.primitives.Expression`.
@@ -1290,6 +1413,12 @@ class ElementwiseMax(SingleScalarOperandExpressionWithWhere):
     Returns a vector of DOFs with all entries on each element set
     to the maximum of DOFs on that element.
     """
+
+
+@for_each_expression
+def elementwise_max(expr: ArithmeticExpression,
+                    dofdesc: DOFDescriptorLike = None) -> ElementwiseMax:
+    return ElementwiseMax(expr, as_dofdesc(dofdesc))
 
 
 @expr_dataclass()
@@ -1341,15 +1470,19 @@ class IterativeInverse(Expression):
     .. autoattribute:: dofdesc
     """
 
-    expression: Expression
+    expression: ArithmeticExpression
     """The operator *A* used in the linear solve."""
-    rhs: Expression
+    rhs: ArithmeticExpression
     """The right-hand side variable used in the linear solve."""
     variable_name: str
     """The name of the variable to solve for."""
-    extra_vars: dict[str, Variable]
+
+    # pylint: disable-next=invalid-field-call
+    extra_vars: dict[str, Variable] = field(default_factory=dict)
     """A dictionary of additional variables required to define the operator."""
-    dofdesc: DOFDescriptor
+
+    # pylint: disable-next=invalid-field-call
+    dofdesc: DOFDescriptor = field(default_factory=lambda: DEFAULT_DOFDESC)
     """A descriptor for the geometry on which the solution is defined."""
 
     def __post_init__(self) -> None:
@@ -1452,7 +1585,7 @@ def hashable_kernel_args(kernel_arguments):
         sorted(kernel_arguments.items()))
 
 
-@expr_dataclass(hash=False)
+@expr_dataclass(init=False, hash=False)
 class IntG(Expression):
     r"""
     .. math::
@@ -1530,6 +1663,43 @@ class IntG(Expression):
     them.
     """
 
+    def __init__(
+            self,
+            target_kernel: Kernel,
+            source_kernels: Iterable[Kernel],
+            densities: Iterable[Expression],
+            qbx_forced_limit: QBXForcedLimit,
+            source: DOFDescriptorLike | None = None,
+            target: DOFDescriptorLike | None = None,
+            kernel_arguments: dict[str, Any] | None = None,
+            **kwargs: Any
+            ) -> None:
+        if kernel_arguments is None:
+            kernel_arguments = {}
+
+        if kwargs:
+            warn(f"Passing named '**kwargs' to {type(self).__name__!r} is "
+                 "deprecated and will result in an error in 2025. Use the "
+                 "'kernel_arguments' argument instead.",
+                 DeprecationWarning, stacklevel=2)
+
+            kernel_arguments = kernel_arguments.copy()
+            for name, value in kwargs.items():
+                if name in kernel_arguments:
+                    raise ValueError(f"'{name}' already set in 'kernel_arguments'")
+
+                kernel_arguments[name] = value
+
+        object.__setattr__(self, "target_kernel", target_kernel)
+        object.__setattr__(self, "source_kernels", source_kernels)
+        object.__setattr__(self, "densities", densities)
+        object.__setattr__(self, "qbx_forced_limit", qbx_forced_limit)
+        object.__setattr__(self, "source", source)
+        object.__setattr__(self, "target", target)
+        object.__setattr__(self, "kernel_arguments", kernel_arguments)
+
+        self.__post_init__()
+
     def __post_init__(self) -> None:
         if self.qbx_forced_limit not in {-1, +1, -2, +2, "avg", None}:
             raise ValueError(
@@ -1575,7 +1745,7 @@ class IntG(Expression):
             object.__setattr__(self, "kernel_arguments", dict(kernel_arguments))
 
         # fold duplicates in source_kernels
-        kernel_to_density: dict[Kernel, ExpressionBase] = {}
+        kernel_to_density: dict[Kernel, ExpressionNode] = {}
         for density, source_kernel in zip(self.densities, self.source_kernels,
                                           strict=True):
             if source_kernel in kernel_to_density:
