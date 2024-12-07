@@ -329,6 +329,8 @@ Pretty-printing expressions
 
 __all__ = (
     "Expression",
+    "Operand",
+    "for_each_expression",
 
     "ErrorExpression",
 
