@@ -104,6 +104,8 @@ associated with a :class:`~meshmode.discretization.Discretization`, then
 
 .. autoclass:: ArithmeticExpressionT
 
+.. autoclass:: QBXForcedLimit
+
 .. class:: P
 
     See :class:`pytools.P`
@@ -330,6 +332,9 @@ Pretty-printing expressions
 __all__ = (
     "Expression",
     "Operand",
+
+    "ArithmeticExpressionT",
+    "QBXForcedLimit",
     "for_each_expression",
 
     "ErrorExpression",
@@ -397,7 +402,7 @@ class Expression(ExpressionNode):
 
 Operand: TypeAlias = (
     ArithmeticExpression | np.ndarray[Any, np.dtype[Any]] | MultiVector)
-QBXForcedLimit = int | Literal["avg"] | None
+QBXForcedLimit: TypeAlias = int | Literal["avg"] | None
 
 # NOTE: this will likely live in pymbolic at some point, but for now we take it!
 ArithmeticExpressionT = TypeVar("ArithmeticExpressionT", bound=ArithmeticExpression)
@@ -613,14 +618,6 @@ class NumReferenceDerivative(DiscretizationProperty):
                 operand: Operand | None = None,
                 dofdesc: DOFDescriptor | None = None,
                 ) -> "NumReferenceDerivative":
-        if isinstance(ref_axes, int):
-            warn(f"Passing an 'int' as 'ref_axes' to {cls.__name__!r} "
-                 "is deprecated and will result in an error in 2025. Pass the "
-                 "well-formatted tuple '((ref_axes, 1),)' instead.",
-                 DeprecationWarning, stacklevel=2)
-
-            ref_axes = ((ref_axes, 1),)
-
         if isinstance(operand, np.ndarray | MultiVector):
             warn(f"Passing {type(operand)} directly to {cls.__name__!r} "
                  "is deprecated and will result in an error from 2025. Use "
@@ -643,6 +640,14 @@ class NumReferenceDerivative(DiscretizationProperty):
                  ref_axes: tuple[tuple[int, int], ...],
                  operand: ArithmeticExpression,
                  dofdesc: DOFDescriptorLike) -> None:
+        if isinstance(ref_axes, int):
+            warn(f"Passing an 'int' as 'ref_axes' to {type(self).__name__!r} "
+                 "is deprecated and will result in an error in 2025. Pass the "
+                 "well-formatted tuple '((ref_axes, 1),)' instead.",
+                 DeprecationWarning, stacklevel=2)
+
+            ref_axes = ((ref_axes, 1),)
+
         if not isinstance(ref_axes, tuple):
             raise ValueError(f"'ref_axes' must be a tuple: {type(ref_axes)}")
 
@@ -858,12 +863,13 @@ def shape_operator(ambient_dim, dim=None, dofdesc=None):
 
 def _element_size(ambient_dim, dim=None, dofdesc=None):
     # A broken quasi-1D approximation of 1D element size. Do not use.
-
     if dim is None:
         dim = ambient_dim - 1
 
+    dofdesc = as_dofdesc(dofdesc)
     return elementwise_sum(
-            area_element(ambient_dim=ambient_dim, dim=dim) * QWeight(),
+            area_element(ambient_dim=ambient_dim, dim=dim, dofdesc=dofdesc)
+            * QWeight(dofdesc),
             dofdesc)**(1/dim)
 
 
@@ -1139,10 +1145,10 @@ def expansion_centers(ambient_dim, side, dim=None, dofdesc=None):
 
 
 def interleaved_expansion_centers(ambient_dim, dim=None, dofdesc=None):
-    centers = [
+    centers = (
             expansion_centers(ambient_dim, -1, dim=dim, dofdesc=dofdesc),
             expansion_centers(ambient_dim, +1, dim=dim, dofdesc=dofdesc)
-            ]
+            )
 
     source = as_dofdesc(dofdesc)
     target = source.copy(granularity=GRANULARITY_CENTER)
@@ -1169,8 +1175,9 @@ def h_min(ambient_dim, dim=None, dofdesc=None):
 
 def weights_and_area_elements(ambient_dim, dim=None, dofdesc=None):
     """Combines :func:`area_element` and :class:`QWeight`."""
-
+    dofdesc = as_dofdesc(dofdesc)
     area = area_element(ambient_dim, dim=dim, dofdesc=dofdesc)
+
     return cse(area * QWeight(dofdesc=dofdesc),
             "weights_area_elements",
             cse_scope.DISCRETIZATION)

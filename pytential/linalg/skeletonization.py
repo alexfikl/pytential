@@ -399,7 +399,7 @@ def make_skeletonization_wrangler(
     try:
         lpot_exprs = list(exprs)
     except TypeError:
-        lpot_exprs = [exprs]
+        lpot_exprs = [exprs]  # type: ignore[list-item]
 
     try:
         input_exprs = list(input_exprs)
@@ -438,14 +438,17 @@ def make_skeletonization_wrangler(
     from pytential.symbolic.matrix import (
             P2PClusterMatrixBuilder, QBXClusterMatrixBuilder)
 
-    if _neighbor_cluster_builder is None:
-        _neighbor_cluster_builder = QBXClusterMatrixBuilder
+    neighbor_cluster_builder = _neighbor_cluster_builder
+    if neighbor_cluster_builder is None:
+        neighbor_cluster_builder = QBXClusterMatrixBuilder
 
-    if _proxy_source_cluster_builder is None:
-        _proxy_source_cluster_builder = P2PClusterMatrixBuilder
+    proxy_source_cluster_builder = _proxy_source_cluster_builder
+    if proxy_source_cluster_builder is None:
+        proxy_source_cluster_builder = P2PClusterMatrixBuilder
 
-    if _proxy_target_cluster_builder is None:
-        _proxy_target_cluster_builder = QBXClusterMatrixBuilder
+    proxy_target_cluster_builder = _proxy_target_cluster_builder
+    if proxy_target_cluster_builder is None:
+        proxy_target_cluster_builder = QBXClusterMatrixBuilder
 
     # }}}
 
@@ -455,15 +458,15 @@ def make_skeletonization_wrangler(
             input_exprs=tuple(input_exprs),
             domains=tuple(domains),
             context=context,
-            neighbor_cluster_builder=_neighbor_cluster_builder,
+            neighbor_cluster_builder=neighbor_cluster_builder,
             # source
             weighted_sources=weighted_sources,
             source_proxy_exprs=source_proxy_exprs,
-            proxy_source_cluster_builder=_proxy_source_cluster_builder,
+            proxy_source_cluster_builder=proxy_source_cluster_builder,
             # target
             weighted_targets=weighted_targets,
             target_proxy_exprs=target_proxy_exprs,
-            proxy_target_cluster_builder=_proxy_target_cluster_builder,
+            proxy_target_cluster_builder=proxy_target_cluster_builder,
             )
 
 # }}}
@@ -574,8 +577,10 @@ def _skeletonize_block_by_proxy_with_mats(
         proxy_generator: ProxyGeneratorBase,
         wrangler: SkeletonizationWrangler,
         tgt_src_index: TargetAndSourceClusterList, *,
-        id_eps: float | None = None, id_rank: int | None = None,
-        max_particles_in_box: int | None = None
+        id_eps: float | None = None,
+        id_rank: int | None = None,
+        max_particles_in_box: int | None = None,
+        rng: np.random.Generator | None = None,
         ) -> "SkeletonizationResult":
     nclusters = tgt_src_index.nclusters
     if nclusters == 1:
@@ -616,6 +621,7 @@ def _skeletonize_block_by_proxy_with_mats(
     R: np.ndarray = np.empty(nclusters, dtype=object)
 
     from pytential.linalg import interp_decomp
+
     for i in range(nclusters):
         k = id_rank
         src_mat = np.vstack(src_result[i])
@@ -629,7 +635,7 @@ def _skeletonize_block_by_proxy_with_mats(
             assert np.all(isfinite), np.where(isfinite)
 
         # skeletonize target points
-        k, idx, interp = interp_decomp(tgt_mat.T, rank=k, eps=id_eps)
+        k, idx, interp = interp_decomp(tgt_mat.T, rank=k, eps=id_eps, rng=rng)
         assert 0 < k <= len(idx)
 
         if k > max_allowable_rank:
@@ -641,7 +647,7 @@ def _skeletonize_block_by_proxy_with_mats(
         assert L[i].shape == (tgt_mat.shape[0], k)
 
         # skeletonize source points
-        k, idx, interp = interp_decomp(src_mat, rank=k, eps=None)
+        k, idx, interp = interp_decomp(src_mat, rank=k, eps=None, rng=rng)
         assert 0 < k <= len(idx)
 
         R[i] = interp
@@ -759,6 +765,7 @@ def skeletonize_by_proxy(
 
         id_eps: float | None = None,
         id_rank: int | None = None,
+        rng: np.random.Generator | None = None,
         max_particles_in_box: int | None = None) -> np.ndarray:
     r"""Evaluate and skeletonize a symbolic expression using proxy-based methods.
 
@@ -795,8 +802,10 @@ def skeletonize_by_proxy(
         for ibcol in range(wrangler.ncols):
             skels[ibrow, ibcol] = _skeletonize_block_by_proxy_with_mats(
                     actx, ibrow, ibcol, places, proxy, wrangler, tgt_src_index,
-                    id_eps=id_eps, id_rank=id_rank,
-                    max_particles_in_box=max_particles_in_box)
+                    id_eps=id_eps,
+                    id_rank=id_rank,
+                    max_particles_in_box=max_particles_in_box,
+                    rng=rng)
 
     return skels
 
