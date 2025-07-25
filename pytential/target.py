@@ -39,7 +39,7 @@ used as evaluation targets.
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from arraycontext.context import Array
+from arraycontext import Array
 from pytools import T
 
 if TYPE_CHECKING:
@@ -93,7 +93,9 @@ class PointsTarget(TargetBase):
 
     @property
     def ambient_dim(self) -> int:
-        return self._nodes.shape[0]
+        adim = self._nodes.shape[0]
+        assert isinstance(adim, int)
+        return adim
 
     @property
     def ndofs(self) -> int:
