@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2021 Isuru Fernando"
 
 __license__ = """
@@ -22,11 +25,19 @@ THE SOFTWARE.
 
 import numpy as np
 
+from sumpy.kernel import (
+    AxisSourceDerivative,
+    AxisTargetDerivative,
+    LaplaceKernel,
+    TargetPointMultiplier,
+)
+
 from pytential import sym
-from sumpy.kernel import (AxisTargetDerivative, AxisSourceDerivative,
-    TargetPointMultiplier, LaplaceKernel)
-from pytential.symbolic.stokes import (StressletWrapperBase, StokesletWrapperBase,
-        _MU_SYM_DEFAULT)
+from pytential.symbolic.stokes import (
+    _MU_SYM_DEFAULT,
+    StokesletWrapperBase,
+    StressletWrapperBase,
+)
 
 
 class StressletWrapperYoshida(StressletWrapperBase):
@@ -96,7 +107,7 @@ class StressletWrapperYoshida(StressletWrapperBase):
         sym_expr = np.zeros((3,), dtype=object)
 
         kernel = self.kernel
-        source = [sym.NodeCoordinateComponent(d) for d in range(3)]
+        source = sym.nodes(3)
         normal = dir_vec_sym
         sigma = stresslet_density_vec_sym
 

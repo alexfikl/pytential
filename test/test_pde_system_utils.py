@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2021 Isuru Fernando"
 
 __license__ = """
@@ -20,14 +23,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from sumpy.kernel import (LaplaceKernel, AxisSourceDerivative,
-    AxisTargetDerivative, TargetPointMultiplier, BiharmonicKernel, HelmholtzKernel,
-    DirectionalTargetDerivative)
-from pytential.symbolic.primitives import (int_g_vec, D, IntG,
-    NodeCoordinateComponent)
-from pytential.symbolic.pde.system_utils import (merge_int_g_exprs,
-    rewrite_using_base_kernel)
-from pymbolic.primitives import make_sym_vector, Variable
+from pymbolic.primitives import Variable, make_sym_vector
+from sumpy.kernel import (
+    AxisSourceDerivative,
+    AxisTargetDerivative,
+    BiharmonicKernel,
+    DirectionalTargetDerivative,
+    HelmholtzKernel,
+    LaplaceKernel,
+    TargetPointMultiplier,
+)
+
+from pytential.symbolic.pde.system_utils import (
+    merge_int_g_exprs,
+    rewrite_using_base_kernel,
+)
+from pytential.symbolic.primitives import D, IntG, NodeCoordinateComponent, int_g_vec
 
 
 def test_reduce_number_of_fmms():
@@ -211,6 +222,7 @@ def test_merge_different_qbx_forced_limit():
 
 def test_merge_directional_source():
     from pymbolic.primitives import Variable
+
     from pytential.symbolic.primitives import cse
 
     dim = 3
@@ -270,7 +282,7 @@ def test_restoring_target_attributes():
 
 
 def test_int_gs_in_densities():
-    from pymbolic.primitives import Variable, Quotient
+    from pymbolic.primitives import Quotient, Variable
     dim = 3
     laplace_knl = LaplaceKernel(dim)
     density = Variable("density")

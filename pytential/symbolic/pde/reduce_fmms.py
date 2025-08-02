@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2021 Isuru Fernando"
 
 __license__ = """
@@ -20,18 +23,19 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from sumpy.kernel import (AxisTargetDerivative, AxisSourceDerivative,
-        KernelWrapper)
-
-from pymbolic.interop.sympy import PymbolicToSympyMapper, SympyToPymbolicMapper
-from pymbolic.mapper import Mapper
-from pymbolic.geometric_algebra.mapper import WalkMapper
-from pymbolic.primitives import Product
-import sympy
 import functools
+import logging
 from collections import defaultdict
 
-import logging
+import sympy
+
+from pymbolic.geometric_algebra.mapper import WalkMapper
+from pymbolic.interop.sympy import PymbolicToSympyMapper, SympyToPymbolicMapper
+from pymbolic.mapper import Mapper
+from pymbolic.primitives import Product
+from sumpy.kernel import AxisSourceDerivative, AxisTargetDerivative, KernelWrapper
+
+
 logger = logging.getLogger(__name__)
 
 

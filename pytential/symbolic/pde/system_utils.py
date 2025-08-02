@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2020 Isuru Fernando"
 
 __license__ = """
@@ -20,30 +23,42 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import numpy as np
-
-from sumpy.symbolic import make_sym_vector, SympyToPymbolicMapper
-import sumpy.symbolic as sym
-from sumpy.kernel import (AxisTargetDerivative, AxisSourceDerivative,
-    DirectionalSourceDerivative, ExpressionKernel,
-    KernelWrapper, TargetPointMultiplier, DirectionalDerivative)
-from pytools import (memoize_on_first_arg,
-                generate_nonnegative_integer_tuples_summing_to_at_most
-                as gnitstam)
+import logging
 from collections import defaultdict
 
+import numpy as np
+
+import sumpy.symbolic as sym
 from pymbolic.geometric_algebra.mapper import WalkMapper
 from pymbolic.mapper import CombineMapper
 from pymbolic.mapper.coefficient import CoefficientCollector
-from pytential.symbolic.primitives import (IntG, NodeCoordinateComponent,
-    hashable_kernel_args, hashable_kernel_arg_value)
-from pytential.symbolic.mappers import IdentityMapper
-from pytential.utils import chop, lu_solve_with_expand
+from pytools import (
+    generate_nonnegative_integer_tuples_summing_to_at_most as gnitstam,
+    memoize_on_first_arg,
+)
+from sumpy.kernel import (
+    AxisSourceDerivative,
+    AxisTargetDerivative,
+    DirectionalDerivative,
+    DirectionalSourceDerivative,
+    ExpressionKernel,
+    KernelWrapper,
+    TargetPointMultiplier,
+)
+from sumpy.symbolic import SympyToPymbolicMapper, make_sym_vector
+
 import pytential
-
+from pytential.symbolic.mappers import IdentityMapper
 from pytential.symbolic.pde.reduce_fmms import reduce_number_of_fmms
+from pytential.symbolic.primitives import (
+    IntG,
+    NodeCoordinateComponent,
+    hashable_kernel_arg_value,
+    hashable_kernel_args,
+)
+from pytential.utils import chop, lu_solve_with_expand
 
-import logging
+
 logger = logging.getLogger(__name__)
 
 __all__ = (
@@ -159,6 +174,7 @@ def convert_target_multiplier_to_source(int_g):
     TargetMultiplier and only source dependent transformations
     """
     import sympy
+
     import sumpy.symbolic as sym
     from sumpy.symbolic import SympyToPymbolicMapper
     conv = SympyToPymbolicMapper()
@@ -924,8 +940,8 @@ def simplify_densities(densities):
     """Simplify densities by converting to sympy and converting back
     to trigger sympy's automatic simplification routines.
     """
-    from sumpy.symbolic import (SympyToPymbolicMapper, PymbolicToSympyMapper)
     from pymbolic.mapper import UnsupportedExpressionError
+    from sumpy.symbolic import PymbolicToSympyMapper, SympyToPymbolicMapper
     to_sympy = PymbolicToSympyMapper()
     to_pymbolic = SympyToPymbolicMapper()
     result = []
@@ -940,8 +956,13 @@ def simplify_densities(densities):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
-    from sumpy.kernel import (StokesletKernel, BiharmonicKernel,  # noqa:F401
-        StressletKernel, ElasticityKernel, LaplaceKernel)
+    from sumpy.kernel import (  # noqa:F401
+        BiharmonicKernel,
+        ElasticityKernel,
+        LaplaceKernel,
+        StokesletKernel,
+        StressletKernel,
+    )
     base_kernel = BiharmonicKernel(3)
     # base_kernel = LaplaceKernel(3)
     kernels = [StokesletKernel(3, 0, 2), StokesletKernel(3, 0, 0)]
