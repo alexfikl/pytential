@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2017 Andreas Kloeckner"
 
 __license__ = """
@@ -20,26 +23,29 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import logging
+
 import numpy as np
 
-from pytools import memoize_method
 import pyopencl as cl
 import pyopencl.array
-
 from boxtree.pyfmmlib_integration import (
-        Kernel,
-        FMMLibTreeIndependentDataForWrangler,
-        FMMLibExpansionWrangler)
+    FMMLibExpansionWrangler,
+    FMMLibTreeIndependentDataForWrangler,
+    Kernel,
+)
+from boxtree.timing import return_timing_data
+from pytools import log_process, memoize_method
 from sumpy.kernel import (
-        LaplaceKernel, HelmholtzKernel, AxisTargetDerivative,
-        DirectionalSourceDerivative)
+    AxisTargetDerivative,
+    DirectionalSourceDerivative,
+    HelmholtzKernel,
+    LaplaceKernel,
+)
+
 import pytential.qbx.target_specific as ts
 
 
-from boxtree.timing import return_timing_data
-from pytools import log_process
-
-import logging
 logger = logging.getLogger(__name__)
 
 
@@ -209,16 +215,16 @@ class QBXFMMLibExpansionWrangler(FMMLibExpansionWrangler):
 
         nqbtl = self.geo_data.non_qbx_box_target_lists()
 
-        from pytools.obj_array import make_obj_array
-        return make_obj_array([
+        from pytools import obj_array
+        return obj_array.new_1d([
                 np.zeros(nqbtl.nfiltered_targets, self.tree_indep.dtype)
                 for k in self.tree_indep.outputs])
 
     def full_output_zeros(self, template_ary):
         """This includes QBX and non-QBX targets."""
 
-        from pytools.obj_array import make_obj_array
-        return make_obj_array([
+        from pytools import obj_array
+        return obj_array.new_1d([
                 np.zeros(self.tree.ntargets, self.tree_indep.dtype)
                 for k in self.tree_indep.outputs])
 

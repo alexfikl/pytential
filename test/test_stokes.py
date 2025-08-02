@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2017 Natalie Beams"
 
 __license__ = """
@@ -20,28 +23,27 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+import logging
 from functools import partial
-import pytest
-
-import numpy as np
-
-from arraycontext import flatten
-from pytential import GeometryCollection, bind, sym
-from meshmode.discretization import Discretization
-from meshmode.discretization.poly_element import \
-        InterpolatoryQuadratureGroupFactory
-from pytools.obj_array import make_obj_array
-from sumpy.symbolic import SpatialConstant
-
-from meshmode import _acf           # noqa: F401
-from arraycontext import pytest_generate_tests_for_array_contexts
 
 import extra_int_eq_data as eid
-import logging
+import numpy as np
+import pytest
+
+from arraycontext import flatten, pytest_generate_tests_for_array_contexts
+from meshmode import _acf  # noqa: F401  # noqa: F401  # noqa: F401
+from meshmode.discretization import Discretization
+from meshmode.discretization.poly_element import InterpolatoryQuadratureGroupFactory
+from pytools import obj_array
+from sumpy.symbolic import SpatialConstant
+
+from pytential import GeometryCollection, bind, sym
+
+
 logger = logging.getLogger(__name__)
 
-from pytential.utils import (  # noqa: F401
-        pytest_teardown_function as teardown_function)
+from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
+
 
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
     "pyopencl-deprecated",
@@ -91,7 +93,7 @@ def run_exterior_stokes(actx_factory, *,
     places = {}
 
     if ambient_dim == 2:
-        from meshmode.mesh.generation import make_curve_mesh, ellipse
+        from meshmode.mesh.generation import ellipse, make_curve_mesh
         mesh = make_curve_mesh(
                 lambda t: radius * ellipse(aspect_ratio, t),
                 np.linspace(0.0, 1.0, resolution + 1),
@@ -133,8 +135,8 @@ def run_exterior_stokes(actx_factory, *,
     places["point_target"] = point_target
 
     if visualize:
-        from sumpy.visualization import make_field_plotter_from_bbox
         from meshmode.mesh.processing import find_bounding_box
+        from sumpy.visualization import make_field_plotter_from_bbox
         fplot = make_field_plotter_from_bbox(
                 find_bounding_box(mesh),
                 h=0.1, extend_factor=1.0)
@@ -200,13 +202,13 @@ def run_exterior_stokes(actx_factory, *,
     normal = bind(places, sym.normal(ambient_dim).as_vector())(actx)
 
     rng = np.random.default_rng(seed=42)
-    charges = make_obj_array([
+    charges = obj_array.new_1d([
         actx.from_numpy(rng.normal(size=point_source.ndofs))
         for _ in range(ambient_dim)
         ])
 
     if ambient_dim == 2:
-        total_charge = make_obj_array([
+        total_charge = obj_array.new_1d([
             actx.to_numpy(actx.np.sum(c)) for c in charges
             ])
         omega = bind(places, total_charge * sym.Ones())(actx)
@@ -468,7 +470,7 @@ class StokesletIdentity:
                 qbx_forced_limit=+1)
 
     def ref_result(self):
-        return make_obj_array([1.0e-15 * sym.Ones()] * self.ambient_dim)
+        return obj_array.new_1d([1.0e-15 * sym.Ones()] * self.ambient_dim)
 
 
 @pytest.mark.parametrize("cls", [

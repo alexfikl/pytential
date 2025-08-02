@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2017 Andreas Kloeckner"
 
 __license__ = """
@@ -25,10 +28,12 @@ __doc__ = """
 .. autoclass:: CahnHilliardOperator
 """
 
-import numpy as np
-from pytential.symbolic.pde.scalar import L2WeightedPDEOperator
-from pytential import sym
 from functools import partial
+
+import numpy as np
+
+from pytential import sym
+from pytential.symbolic.pde.scalar import L2WeightedPDEOperator
 
 
 class CahnHilliardOperator(L2WeightedPDEOperator):
@@ -83,11 +88,13 @@ class CahnHilliardOperator(L2WeightedPDEOperator):
                         qbx_forced_limit="avg",
                         op_map=partial(sym.normal_derivative, 2))
 
-        d = sym.make_obj_array([
+        from pytools import obj_array
+
+        d = obj_array.new_1d([
             0.5*sig1,
             0.5*lam2**2*sig1 - 0.5*sig2
             ])
-        a = sym.make_obj_array([
+        a = obj_array.new_1d([
             # A11
             Sn_G(1, sig1) + c*S_G(1, sig1)
             # A12

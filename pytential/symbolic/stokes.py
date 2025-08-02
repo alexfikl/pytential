@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2017 Natalie Beams"
 
 __license__ = """
@@ -20,15 +23,24 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from abc import ABC
+
 import numpy as np
+
+from sumpy.kernel import (
+    AxisSourceDerivative,
+    AxisTargetDerivative,
+    BiharmonicKernel,
+    ElasticityKernel,
+    LaplaceKernel,
+    StressletKernel,
+    TargetPointMultiplier,
+)
+from sumpy.symbolic import SpatialConstant
 
 from pytential import sym
 from pytential.symbolic.pde.system_utils import rewrite_using_base_kernel
-from sumpy.kernel import (StressletKernel, LaplaceKernel,
-    ElasticityKernel, BiharmonicKernel,
-    AxisTargetDerivative, AxisSourceDerivative, TargetPointMultiplier)
-from sumpy.symbolic import SpatialConstant
-from abc import ABC
+
 
 __doc__ = """
 .. autoclass:: StokesletWrapper
@@ -203,6 +215,7 @@ class StressletWrapperBase(ABC):  # noqa: B024
         # and is implemented in base class here.
 
         import itertools
+
         from pytential.symbolic.mappers import DerivativeTaker
         kernel = LaplaceKernel(dim=self.dim)
 
@@ -233,8 +246,7 @@ class StressletWrapperBase(ABC):  # noqa: B024
         :arg qbx_forced_limit: the *qbx_forced_limit* argument to be passed on
             to :class:`~pytential.symbolic.primitives.IntG`.
         """
-        return self.apply(density_vec_sym, dir_vec_sym, qbx_forced_limit,
-                [deriv_dir])
+        return self.apply(density_vec_sym, dir_vec_sym, qbx_forced_limit, [deriv_dir])
 
     def apply_stress(self, density_vec_sym, normal_vec_sym, dir_vec_sym,
                         qbx_forced_limit):

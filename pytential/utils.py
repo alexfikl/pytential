@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = """
 Copyright (C) 2020 Matt Wala
 Copyright (C) 2023 University of Illinois Board of Trustees
@@ -24,11 +27,24 @@ THE SOFTWARE.
 """
 
 import sys
+from typing import TYPE_CHECKING, TypeVar
 
 import sumpy.symbolic as sym
 
 
-def sort_arrays_together(*arys, key=None):
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from useful_types import SupportsRichComparison
+
+
+T = TypeVar("T")
+
+
+def sort_arrays_together(
+            *arys: Sequence[T],
+            key: Callable[[tuple[T, ...]], SupportsRichComparison] | None = None
+        ):
     """Sort a sequence of arrays by considering them
     as an array of sequences using the given sorting key
 

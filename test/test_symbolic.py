@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+
 __copyright__ = "Copyright (C) 2017 Matt Wala"
 
 __license__ = """
@@ -20,28 +23,29 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-import pytest
+import logging
 from functools import partial
 
 import numpy as np
 import numpy.linalg as la
+import pytest
 
-from arraycontext import flatten, unflatten
 import meshmode.mesh.generation as mgen
+from arraycontext import flatten, pytest_generate_tests_for_array_contexts, unflatten
+from meshmode import _acf  # noqa: F401
+from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 from meshmode.discretization import Discretization
-from meshmode.discretization.poly_element import \
-    InterpolatoryQuadratureSimplexGroupFactory
+from meshmode.discretization.poly_element import (
+    InterpolatoryQuadratureSimplexGroupFactory,
+)
+
 from pytential import bind, sym
 
-from meshmode import _acf           # noqa: F401
-from arraycontext import pytest_generate_tests_for_array_contexts
-from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 
-import logging
 logger = logging.getLogger(__name__)
 
-from pytential.utils import (  # noqa: F401
-        pytest_teardown_function as teardown_function)
+from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
+
 
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
     PytestPyOpenCLArrayContextFactory,
@@ -86,9 +90,10 @@ def get_torus_with_ref_mean_curvature(actx, h):
     a = r_major
     b = r_minor
 
+    from pytools import obj_array
+
     u = actx.np.arctan2(nodes[1], nodes[0])
-    from pytools.obj_array import flat_obj_array
-    rvec = flat_obj_array(actx.np.cos(u), actx.np.sin(u), 0*u)
+    rvec = obj_array.flat(actx.np.cos(u), actx.np.sin(u), 0*u)
     rvec = sum(nodes * rvec) - a
     cosv = actx.np.cos(actx.np.arctan2(nodes[2], rvec))
 
@@ -148,8 +153,10 @@ def test_tangential_onb(actx_factory):
     tob = sym.tangential_onb(mesh.ambient_dim)
     nvecs = tob.shape[1]
 
+    from pytools import obj_array
+
     # make sure tangential_onb is mutually orthogonal and normalized
-    orth_check = bind(discr, sym.make_obj_array([
+    orth_check = bind(discr, obj_array.new_1d([
         np.dot(tob[:, i], tob[:, j]) - (1 if i == j else 0)
         for i in range(nvecs) for j in range(nvecs)])
         )(actx)
@@ -160,7 +167,7 @@ def test_tangential_onb(actx_factory):
                 )
 
     # make sure tangential_onb is orthogonal to normal
-    orth_check = bind(discr, sym.make_obj_array([
+    orth_check = bind(discr, obj_array.new_1d([
         np.dot(tob[:, i], sym.normal(mesh.ambient_dim).as_vector())
         for i in range(nvecs)])
         )(actx)
@@ -177,7 +184,8 @@ def test_tangential_onb(actx_factory):
 
 def test_expr_pickling():
     import pickle
-    from sumpy.kernel import LaplaceKernel, AxisTargetDerivative
+
+    from sumpy.kernel import AxisTargetDerivative, LaplaceKernel
 
     ops_for_testing = [
         sym.d_dx(
@@ -383,8 +391,9 @@ def principal_curvatures(ambient_dim, dim=None, dofdesc=None):
     from pytential.symbolic.primitives import _small_mat_eigenvalues
     kappa1, kappa2 = _small_mat_eigenvalues(s_op)
 
-    from pytools.obj_array import make_obj_array
-    return make_obj_array([
+    from pytools import obj_array
+
+    return obj_array.new_1d([
         sym.cse(kappa1, "principal_curvature_0", sym.cse_scope.DISCRETIZATION),
         sym.cse(kappa2, "principal_curvature_1", sym.cse_scope.DISCRETIZATION),
         ])
@@ -397,12 +406,13 @@ def principal_directions(ambient_dim, dim=None, dofdesc=None):
     (s11, s12), (_, s22) = s_op
     k1, k2 = principal_curvatures(ambient_dim, dim=dim, dofdesc=dofdesc)
 
-    from pytools.obj_array import make_obj_array
-    d1 = sym.cse(make_obj_array([s12, -(s11 - k1)]), scope=sym.cse_scope.EVALUATION)
-    d2 = sym.cse(make_obj_array([-(s22 - k2), s12]), scope=sym.cse_scope.EVALUATION)
+    from pytools import obj_array
+
+    d1 = sym.cse(obj_array.new_1d([s12, -(s11 - k1)]), scope=sym.cse_scope.EVALUATION)
+    d2 = sym.cse(obj_array.new_1d([-(s22 - k2), s12]), scope=sym.cse_scope.EVALUATION)
 
     form1 = sym.first_fundamental_form(ambient_dim, dim=dim, dofdesc=dofdesc)
-    return make_obj_array([
+    return obj_array.new_1d([
         sym.cse(
             d1 / sym.sqrt(d1 @ (form1 @ d1)),
             "principal_direction_0", sym.cse_scope.DISCRETIZATION),
@@ -439,7 +449,7 @@ def test_derivative_binder_expr():
 # {{{ test_mapper_kernel_transformation_remover
 
 def _make_operator(ambient_dim: int, op_name: str, k: float, *, side: int = +1):
-    from sumpy.kernel import LaplaceKernel, HelmholtzKernel, Kernel
+    from sumpy.kernel import HelmholtzKernel, Kernel, LaplaceKernel
     if k == 0:
         kernel: Kernel = LaplaceKernel(ambient_dim)
         kernel_arguments = {}
@@ -470,7 +480,9 @@ def test_mapper_kernel_transformation_remover(op_name, k):
     expr = op.operator(op.get_density_var("sigma"))
 
     from pytential.linalg.direct_solver_symbolic import (
-            OperatorCollector, KernelTransformationRemover)
+        KernelTransformationRemover,
+        OperatorCollector,
+    )
     expr_without_transformations = KernelTransformationRemover()(expr)
     intgs = OperatorCollector()(expr_without_transformations)
 
@@ -521,8 +533,8 @@ def test_mapper_dof_descriptor_replacer(op_name, k):
     op = _make_operator(ambient_dim, op_name, k)
     expr = op.operator(op.get_density_var("sigma"))
 
-    from pytential.symbolic.mappers import ToTargetTagger
     from pytential.linalg.direct_solver_symbolic import DOFDescriptorReplacer
+    from pytential.symbolic.mappers import ToTargetTagger
     source_dd = sym.as_dofdesc(sym.DEFAULT_SOURCE)
     target_dd = sym.as_dofdesc(sym.DEFAULT_TARGET)
     tagged_expr = ToTargetTagger(source_dd, target_dd)(expr)
