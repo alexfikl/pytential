@@ -1838,6 +1838,13 @@ def laplace(ambient_dim: int, operand: ArithmeticExpression) -> ArithmeticExpres
 
 # {{{ potentials
 
+def hashable_kernel_arg_value(val: Operand) -> Hashable:
+    if isinstance(val, ObjectArray):
+        val = tuple(val.flat)
+
+    return val
+
+
 def hashable_kernel_args(
         kernel_arguments: KernelArgumentMapping
     ) -> tuple[tuple[Hashable, Hashable], ...]:

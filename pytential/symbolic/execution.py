@@ -989,13 +989,13 @@ def bind(
         places = GeometryCollection(places, auto_where=auto_where)
         auto_where = places.auto_where
 
-    expr = _prepare_expr(places, expr, auto_where=auto_where)
     if _merge_exprs:
         from pymbolic.primitives import Expression
 
         from pytential.qbx import QBXLayerPotentialSource
         from pytential.symbolic.pde.system_utils import merge_int_g_exprs
 
+        expr = _prepare_expr(places, expr, auto_where=auto_where)
         fmmlib = any(value.fmm_backend == "fmmlib" for value
             in places.places.values() if isinstance(value, QBXLayerPotentialSource))
         if not fmmlib:
@@ -1003,8 +1003,9 @@ def bind(
                 expr = np.array(merge_int_g_exprs(list(expr)), dtype=object)
             elif isinstance(expr, Expression):
                 expr = merge_int_g_exprs([expr])[0]
+    else:
+        expr = _prepare_expr(places, expr, auto_where=auto_where)
 
-    expr = _prepare_expr(places, expr, auto_where=auto_where)
     return BoundExpression(places, expr)
 
 # }}}

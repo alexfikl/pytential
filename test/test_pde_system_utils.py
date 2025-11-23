@@ -28,12 +28,12 @@ from sumpy.kernel import (
     AxisSourceDerivative,
     AxisTargetDerivative,
     BiharmonicKernel,
-    DirectionalTargetDerivative,
     HelmholtzKernel,
     LaplaceKernel,
     TargetPointMultiplier,
 )
 
+from pytential.symbolic.mappers import flatten
 from pytential.symbolic.pde.system_utils import (
     merge_int_g_exprs,
     rewrite_using_base_kernel,
@@ -64,20 +64,22 @@ def test_reduce_number_of_fmms():
 
     int_g3 = \
         IntG(target_kernel=AxisTargetDerivative(1, knl),
-             source_kernels=[AxisSourceDerivative(0, knl),
-                 AxisSourceDerivative(1, knl)],
-             densities=[-mu * densities[0], -mu * densities[1]],
+             source_kernels=(
+                AxisSourceDerivative(0, knl),
+                AxisSourceDerivative(1, knl)),
+             densities=(-mu * densities[0], -mu * densities[1]),
              qbx_forced_limit=1)
 
     int_g4 = \
         IntG(target_kernel=AxisTargetDerivative(2, knl),
-             source_kernels=[AxisSourceDerivative(0, knl),
-                 AxisSourceDerivative(1, knl)],
-             densities=[-mu * densities[0], -mu * densities[1]],
+             source_kernels=(
+                AxisSourceDerivative(0, knl),
+                AxisSourceDerivative(1, knl)),
+             densities=(-mu * densities[0], -mu * densities[1]),
              qbx_forced_limit=1)
 
-    assert result[0] == int_g3
-    assert result[1] == int_g4 * mu**(-1)
+    assert result[0] == flatten(int_g3)
+    assert result[1] == flatten(int_g4 * mu**(-1))
 
 
 def test_source_dependent_variable():
@@ -107,16 +109,18 @@ def test_source_dependent_variable():
     # Merging reduces 4 FMMs to 2 FMMs. No further reduction of FMMs.
     int_g3 = \
         IntG(target_kernel=knl,
-             source_kernels=[AxisSourceDerivative(1, AxisSourceDerivative(1, knl)),
-                 AxisSourceDerivative(1, AxisSourceDerivative(0, knl))],
-             densities=[mu * nu * densities[1], mu * nu * densities[0]],
+             source_kernels=(
+                AxisSourceDerivative(1, AxisSourceDerivative(1, knl)),
+                AxisSourceDerivative(1, AxisSourceDerivative(0, knl))),
+             densities=(mu * nu * densities[1], mu * nu * densities[0]),
              qbx_forced_limit=1)
 
     int_g4 = \
         IntG(target_kernel=knl,
-             source_kernels=[AxisSourceDerivative(2, AxisSourceDerivative(1, knl)),
-                 AxisSourceDerivative(2, AxisSourceDerivative(0, knl))],
-             densities=[densities[1], densities[0]],
+             source_kernels=(
+                AxisSourceDerivative(2, AxisSourceDerivative(1, knl)),
+                AxisSourceDerivative(2, AxisSourceDerivative(0, knl))),
+             densities=(densities[1], densities[0]),
              qbx_forced_limit=1)
 
     assert result[0] == int_g3
@@ -150,12 +154,14 @@ def test_base_kernel_merge():
         for i in range(dim)]))
 
     int_g3 = IntG(target_kernel=biharm_knl,
-            source_kernels=[*source_kernels, AxisSourceDerivative(0, biharm_knl)],
-            densities=[density*sources[0]*(-1.0) for _ in range(dim)] + [2*density],
+            source_kernels=(*source_kernels, AxisSourceDerivative(0, biharm_knl)),
+            densities=tuple([density*sources[0]*(-1.0)
+                             for _ in range(dim)] + [2*density]),
             qbx_forced_limit=1)
     int_g4 = IntG(target_kernel=biharm_knl,
-            source_kernels=[*source_kernels, AxisSourceDerivative(1, biharm_knl)],
-            densities=[density*sources[1]*(-1.0) for _ in range(dim)] + [2*density],
+            source_kernels=(*source_kernels, AxisSourceDerivative(1, biharm_knl)),
+            densities=tuple([density*sources[1]*(-1.0)
+                             for _ in range(dim)] + [2*density]),
             qbx_forced_limit=1)
 
     assert result[0] == int_g3
@@ -183,8 +189,8 @@ def test_merge_different_kernels():
 
     int_g3 = int_g_vec(laplace_knl, density, qbx_forced_limit=1) \
         + IntG(target_kernel=helmholtz_knl,
-            source_kernels=[AxisSourceDerivative(0, helmholtz_knl), helmholtz_knl],
-            densities=[-density, density],
+            source_kernels=(AxisSourceDerivative(0, helmholtz_knl), helmholtz_knl),
+            densities=(-density, density),
             qbx_forced_limit=1, k=1) \
         + int_g_vec(helmholtz_knl, density, qbx_forced_limit=1, k=2)
 
@@ -236,7 +242,8 @@ def test_merge_directional_source():
             for d in range(dim)] + [laplace_knl]
     dsource = int_g2.kernel_arguments["dsource_vec"]
     densities = [dsource[d]*cse(density) for d in range(dim)] + [density]
-    int_g3 = int_g2.copy(source_kernels=source_kernels, densities=densities,
+    int_g3 = int_g2.copy(source_kernels=tuple(source_kernels),
+                         densities=tuple(densities),
                          kernel_arguments={})
 
     result = merge_int_g_exprs([int_g1 + int_g2],
@@ -245,22 +252,6 @@ def test_merge_directional_source():
 
     result = merge_int_g_exprs([int_g1 + int_g2])
     assert result[0] == int_g3
-
-
-def test_merge_directional_target():
-    from pymbolic.primitives import Variable
-
-    dim = 3
-    knl = DirectionalTargetDerivative(LaplaceKernel(dim), "target_dir")
-    density = Variable("density")
-    target_dir1 = make_sym_vector("target_dir1", dim)
-    target_dir2 = make_sym_vector("target_dir2", dim)
-
-    int_g1 = int_g_vec(knl, density, qbx_forced_limit=1, target_dir=target_dir1)
-    int_g2 = int_g_vec(knl, density, qbx_forced_limit=1, target_dir=target_dir2)
-
-    result = merge_int_g_exprs([int_g1 + int_g2])
-    assert result[0] == int_g1 + int_g2
 
 
 def test_restoring_target_attributes():

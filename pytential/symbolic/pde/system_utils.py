@@ -633,8 +633,10 @@ def merge_int_g_exprs(exprs, source_dependent_variables=None):
             for int_g in targetless_int_g_mapping[insn]:
                 replacements[int_g] = restore_target_attributes(reduced_insn, int_g)
 
+    from pytential.symbolic.mappers import flatten
+
     mapper = IntGSubstitutor(replacements)
-    result = [mapper(expr) for expr in result]
+    result = [flatten(mapper(expr)) for expr in result]
 
     orig_count = get_number_of_fmms(exprs)
     new_count = get_number_of_fmms(result)

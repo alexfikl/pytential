@@ -133,12 +133,16 @@ def reduce_number_of_fmms(int_gs, source_dependent_variables):
     source_int_gs_merged = []
     for i in range(right_factor.shape[0]):
         source_kernels = []
+
         densities = []
         for j in range(right_factor.shape[1]):
-            new_densities = [density * source_exprs[j] for density in
-                    source_int_gs[i][j].densities]
+            new_densities = [
+                    density * source_exprs[j]
+                    for density in source_int_gs[i][j].densities]
+
             source_kernels.extend(source_int_gs[i][j].source_kernels)
             densities.extend(new_densities)
+
         source_int_gs_merged.append(source_int_gs[i][0].copy(
             source_kernels=tuple(source_kernels), densities=tuple(densities)))
 
@@ -340,7 +344,7 @@ class CoefficientCollector(Mapper):
         d_den = self.rec(expr.denominator)
         if len(d_den) > 1:
             raise ValueError
-        den_var, den_coeff = next(d_den.items())
+        den_var, den_coeff = next(iter(d_den.items()))
 
         return {num_var/den_var: num_coeff/den_coeff for
             num_var, num_coeff in d_num.items()}

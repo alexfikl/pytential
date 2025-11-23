@@ -48,7 +48,7 @@ from pytential.utils import pytest_teardown_function as teardown_function  # noq
 logger = logging.getLogger(__name__)
 
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
-    "pyopencl-deprecated",
+    "pyopencl",
     ])
 
 
