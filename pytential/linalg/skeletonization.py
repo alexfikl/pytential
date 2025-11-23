@@ -23,12 +23,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from meshmode.discretization import Discretization
+from pytools import memoize_in, obj_array
+
+from pytential import GeometryCollection, bind, sym
 from pytential.linalg.direct_solver_symbolic import (
     PROXY_SKELETONIZATION_SOURCE,
     PROXY_SKELETONIZATION_TARGET,
@@ -39,16 +42,18 @@ from pytential.linalg.utils import IndexList, TargetAndSourceClusterList
 
 
 if TYPE_CHECKING:
-    from arraycontext import Array, PyOpenCLArrayContext
+    from collections.abc import Callable, Hashable, Sequence
 
-    from pytential import GeometryCollection, sym
+    import optype.numpy as onp
+
+    from arraycontext import Array, PyOpenCLArrayContext
+    from pymbolic.typing import ArithmeticExpression
+
     from pytential.linalg.proxy import ProxyClusterGeometryData, ProxyGeneratorBase
     from pytential.symbolic.matrix import ClusterMatrixBuilderBase
 
 
 __doc__ = """
-.. currentmodule:: pytential.linalg
-
 Skeletonization
 ---------------
 
@@ -119,8 +124,8 @@ def _approximate_geometry_waa_magnitude(
         cluster_index: IndexList,
         domain: sym.DOFDescriptor) -> Array:
     """
-    :arg cluster_index: a :class:`~pytential.linalg.IndexList` representing the
-        clusters on which to operate. In practice, this can be the cluster
+    :arg cluster_index: a :class:`~pytential.linalg.utils.IndexList` representing
+        the clusters on which to operate. In practice, this can be the cluster
         indices themselves or the indices of neighboring points to each
         cluster (i.e. points inside the proxy ball).
 
@@ -128,10 +133,6 @@ def _approximate_geometry_waa_magnitude(
         of the quadrature weights and area elements in the cluster. Currently,
         this is a simple average.
     """
-    from pytools import memoize_in
-
-    from pytential import bind, sym
-
     @memoize_in(actx, (_approximate_geometry_waa_magnitude, "mean_over_cluster"))
     def prg():
         import loopy as lp
@@ -149,8 +150,10 @@ def _approximate_geometry_waa_magnitude(
 
         return knl.executor(actx.context)
 
+    from meshmode.dof_array import DOFArray
     waa = bind(places, sym.weights_and_area_elements(
         places.ambient_dim, dofdesc=domain))(actx)
+    assert isinstance(waa, DOFArray)
     result = actx.np.zeros((cluster_index.nclusters,), dtype=waa.entry_dtype)
 
     from arraycontext import flatten
@@ -165,11 +168,11 @@ def _approximate_geometry_waa_magnitude(
 
 def _apply_weights(
         actx: PyOpenCLArrayContext,
-        mat: np.ndarray,
+        mat: onp.Array1D[np.inexact],
         places: GeometryCollection,
         tgt_pxy_index: TargetAndSourceClusterList,
         cluster_index: IndexList,
-        domain: sym.DOFDescriptor) -> np.ndarray:
+        domain: sym.DOFDescriptor) -> onp.Array1D[np.inexact]:
     """Computes the weights using :func:`_approximate_geometry_waa_magnitude`
     and multiplies each cluster in *mat* by its corresponding weight.
 
@@ -191,66 +194,23 @@ def _apply_weights(
 @dataclass(frozen=True)
 class SkeletonizationWrangler:
     """
-    .. attribute:: nrows
-
-        Number of output :attr:`exprs` in the operator.
-
-    .. attribute:: ncols
-
-        Number of :attr:`input_exprs` in the operator.
-
-    .. attribute:: exprs
-
-        An :class:`~numpy.ndarray` of shape ``(nrows,)`` of expressions
-        (layer potentials) that correspond to the output blocks of the matrix.
-        These expressions are tagged for nearfield neighbor evaluation.
-
-    .. attribute:: source_proxy_exprs
-    .. attribute:: target_proxy_exprs
-
-        Like :attr:`exprs`, but stripped down for farfield proxy evaluation.
-
-    .. attribute:: input_exprs
-
-        A :class:`tuple` of size ``(ncols,)`` of densities that correspond to
-        the input blocks of the matrix.
-
-    .. attribute:: domains
-
-        A :class:`tuple` of the same length as *input_exprs* defining the
-        domain of each input.
-
-    .. attribute:: context
-
-        A :class:`dict` with additional parameters required to evaluate the
-        expressions.
+    .. autoproperty:: nrows
+    .. autoproperty:: ncols
+    .. autoattribute:: exprs
+    .. autoattribute:: source_proxy_exprs
+    .. autoattribute:: target_proxy_exprs
+    .. autoattribute:: input_exprs
+    .. autoattribute:: domains
+    .. autoattribute:: context
 
     The following attributes and methods are internal and used for skeletonization.
 
-    .. attribute:: weighted_sources
+    .. autoattribute:: weighted_sources
+    .. autoattribute:: weighted_targets
 
-        A flag which if *True* adds a weight to the source to proxy evaluation.
-        This can only be meaningfully set to *False* when skeletonizing direct
-        P2P interactions.
-
-    .. attribute:: weighted_targets
-
-        A flag which if *True* adds a weight to the proxy to target evaluation.
-        This can only be meaningfully set to *False* when skeletonizing direct
-        P2P interactions.
-
-    .. attribute:: proxy_source_cluster_builder
-    .. attribute:: proxy_target_cluster_builder
-
-        A callable that is used to evaluate farfield proxy interactions.
-        This should follow the calling convention of the constructor to
-        :class:`pytential.symbolic.matrix.P2PClusterMatrixBuilder`.
-
-    .. attribute:: neighbor_cluster_builder
-
-        A callable that is used to evaluate nearfield neighbour interactions.
-        This should follow the calling convention of the constructor to
-        :class:`pytential.symbolic.matrix.QBXClusterMatrixBuilder`.
+    .. autoattribute:: proxy_source_cluster_builder
+    .. autoattribute:: proxy_target_cluster_builder
+    .. autoattribute:: neighbor_cluster_builder
 
     .. automethod:: evaluate_source_proxy_interaction
     .. automethod:: evaluate_target_proxy_interaction
@@ -259,38 +219,84 @@ class SkeletonizationWrangler:
     """
 
     # operator
-    exprs: np.ndarray
+    exprs: obj_array.ObjectArray1D[ArithmeticExpression]
+    """An :class:`~numpy.ndarray` of shape ``(nrows,)`` of expressions
+    (layer potentials) that correspond to the output blocks of the operator.
+    These expressions must be tagged for nearfield neighbor evaluation.
+    """
     input_exprs: tuple[sym.var, ...]
+    """A :class:`tuple` of size ``(ncols,)`` of densities that correspond to
+    the input blocks of the matrix.
+    """
     domains: tuple[sym.DOFDescriptor, ...]
+    """A :class:`tuple` of the same length as *input_exprs* defining the
+    domain of each input.
+    """
     context: dict[str, Any]
+    """A :class:`dict` with additional parameters required to evaluate the
+    expressions.
+    """
 
+    # skeletonization
     neighbor_cluster_builder: type[ClusterMatrixBuilderBase]
+    """A callable that is used to evaluate nearfield neighbour interactions.
+    This should follow the calling convention of the constructor to
+    :class:`pytential.symbolic.matrix.QBXClusterMatrixBuilder`.
+    """
 
     # target skeletonization
     weighted_targets: bool
-    target_proxy_exprs: np.ndarray
+    """A flag which if *True* adds a weight to the proxy to target evaluation.
+    This can only be meaningfully set to *False* when skeletonizing direct
+    P2P interactions.
+    """
+    target_proxy_exprs: obj_array.ObjectArray1D[ArithmeticExpression]
+    """Like :attr:`exprs`, but stripped down for farfield proxy evaluation."""
     proxy_target_cluster_builder: type[ClusterMatrixBuilderBase]
+    """A callable that is used to evaluate farfield proxy interactions.
+    This should follow the calling convention of the constructor to
+    :class:`pytential.symbolic.matrix.P2PClusterMatrixBuilder`.
+    """
 
     # source skeletonization
     weighted_sources: bool
-    source_proxy_exprs: np.ndarray
+    """A flag which if *True* adds a weight to the source to proxy evaluation.
+    This can only be meaningfully set to *False* when skeletonizing direct
+    P2P interactions.
+    """
+    source_proxy_exprs: obj_array.ObjectArray1D[ArithmeticExpression]
+    """Like :attr:`exprs`, but stripped down for farfield proxy evaluation."""
     proxy_source_cluster_builder: type[ClusterMatrixBuilderBase]
+    """A callable that is used to evaluate farfield proxy interactions.
+    This should follow the calling convention of the constructor to
+    :class:`pytential.symbolic.matrix.P2PClusterMatrixBuilder`.
+    """
 
     @property
     def nrows(self) -> int:
+        """Number of output :attr:`exprs` in the operator."""
         return len(self.exprs)
 
     @property
     def ncols(self) -> int:
+        """Number of :attr:`input_exprs` in the operator."""
         return len(self.input_exprs)
 
-    def _evaluate_expr(self,
-            actx, places, eval_mapper_cls, tgt_src_index, expr, idomain,
-            **kwargs):
+    def _evaluate_expr(
+            self,
+            actx: PyOpenCLArrayContext,
+            places: GeometryCollection,
+            eval_mapper_cls: type[ClusterMatrixBuilderBase],
+            tgt_src_index: TargetAndSourceClusterList,
+            expr: ArithmeticExpression,
+            idomain: int,
+            **kwargs: Any) -> onp.Array1D[np.inexact]:
         domain = self.domains[idomain]
         dep_discr = places.get_discretization(domain.geometry, domain.discr_stage)
+        assert isinstance(dep_discr, Discretization)
 
-        return eval_mapper_cls(actx,
+        return eval_mapper_cls(
+                actx,
                 dep_expr=self.input_exprs[idomain],
                 other_dep_exprs=(
                     self.input_exprs[:idomain]
@@ -306,8 +312,10 @@ class SkeletonizationWrangler:
     def evaluate_source_neighbor_interaction(self,
             actx: PyOpenCLArrayContext,
             places: GeometryCollection,
-            pxy: ProxyClusterGeometryData, nbrindex: IndexList, *,
-            ibrow: int, ibcol: int) -> tuple[np.ndarray, TargetAndSourceClusterList]:
+            pxy: ProxyClusterGeometryData,
+            nbrindex: IndexList, *,
+            ibrow: int, ibcol: int,
+        ) -> tuple[onp.Array1D[np.inexact], TargetAndSourceClusterList]:
         nbr_src_index = TargetAndSourceClusterList(nbrindex, pxy.srcindex)
 
         eval_mapper_cls = self.neighbor_cluster_builder
@@ -321,8 +329,10 @@ class SkeletonizationWrangler:
     def evaluate_target_neighbor_interaction(self,
             actx: PyOpenCLArrayContext,
             places: GeometryCollection,
-            pxy: ProxyClusterGeometryData, nbrindex: IndexList, *,
-            ibrow: int, ibcol: int) -> tuple[np.ndarray, TargetAndSourceClusterList]:
+            pxy: ProxyClusterGeometryData,
+            nbrindex: IndexList, *,
+            ibrow: int, ibcol: int,
+        ) -> tuple[onp.Array1D[np.inexact], TargetAndSourceClusterList]:
         tgt_nbr_index = TargetAndSourceClusterList(pxy.srcindex, nbrindex)
 
         eval_mapper_cls = self.neighbor_cluster_builder
@@ -340,8 +350,10 @@ class SkeletonizationWrangler:
     def evaluate_source_proxy_interaction(self,
             actx: PyOpenCLArrayContext,
             places: GeometryCollection,
-            pxy: ProxyClusterGeometryData, nbrindex: IndexList, *,
-            ibrow: int, ibcol: int) -> tuple[np.ndarray, TargetAndSourceClusterList]:
+            pxy: ProxyClusterGeometryData,
+            nbrindex: IndexList, *,
+            ibrow: int, ibcol: int,
+        ) -> tuple[onp.Array1D[np.inexact], TargetAndSourceClusterList]:
         from pytential.collection import add_geometry_to_collection
         pxy_src_index = TargetAndSourceClusterList(pxy.pxyindex, pxy.srcindex)
         places = add_geometry_to_collection(
@@ -362,7 +374,8 @@ class SkeletonizationWrangler:
             actx: PyOpenCLArrayContext,
             places: GeometryCollection,
             pxy: ProxyClusterGeometryData, nbrindex: IndexList, *,
-            ibrow: int, ibcol: int) -> tuple[np.ndarray, TargetAndSourceClusterList]:
+            ibrow: int, ibcol: int,
+        ) -> tuple[onp.Array1D[np.inexact], TargetAndSourceClusterList]:
         from pytential.collection import add_geometry_to_collection
         tgt_pxy_index = TargetAndSourceClusterList(pxy.srcindex, pxy.pxyindex)
         places = add_geometry_to_collection(
@@ -389,7 +402,7 @@ class SkeletonizationWrangler:
 
 def make_skeletonization_wrangler(
         places: GeometryCollection,
-        exprs: sym.var | Sequence[sym.var],
+        exprs: ArithmeticExpression | Sequence[ArithmeticExpression],
         input_exprs: sym.var | Sequence[sym.var], *,
         domains: Sequence[Hashable] | None = None,
         context: dict[str, Any] | None = None,
@@ -406,16 +419,17 @@ def make_skeletonization_wrangler(
 
     # {{{ setup expressions
 
-    try:
-        lpot_exprs = list(exprs)
-    except TypeError:
-        lpot_exprs = [exprs]  # type: ignore[list-item]
+    from pymbolic.primitives import is_arithmetic_expression
 
-    try:
-        input_exprs = list(input_exprs)
-    except TypeError:
-        assert not isinstance(input_exprs, Sequence)
+    if is_arithmetic_expression(exprs):
+        lpot_exprs = [exprs]
+    else:
+        lpot_exprs = list(exprs)
+
+    if isinstance(input_exprs, sym.var):
         input_exprs = [input_exprs]
+    else:
+        input_exprs = list(input_exprs)
 
     from pytential.symbolic.execution import _prepare_auto_where, _prepare_domains
 
@@ -489,50 +503,46 @@ def make_skeletonization_wrangler(
 @dataclass(frozen=True)
 class _ProxyNeighborEvaluationResult:
     """
-    .. attribute:: pxy
-
-        A :class:`~pytential.linalg.ProxyClusterGeometryData` containing the
-        proxy points from which :attr:`pxymat` is obtained. This data is also
-        used to construct :attr:`nbrindex` and evaluate :attr:`nbrmat`.
-
-    .. attribute:: pxymat
-
-        Interaction matrix between the proxy points and the source or
-        target points. This matrix is flattened to a shape of ``(nsize,)``,
-        which is consistent with the sum of the cluster sizes in :attr:`pxyindex`,
-        as obtained from
-        :meth:`~pytential.linalg.TargetAndSourceClusterList.cluster_size`.
-
-    .. attribute:: pxyindex
-
-        A :class:`~pytential.linalg.TargetAndSourceClusterList` used to describe
-        the cluster interactions in :attr:`pxymat`.
-
-    .. attribute:: nbrmat
-
-        Interaction matrix between the neighboring points and the source or
-        target points. This matrix is flattened to a shape of ``(nsize,)``,
-        which is consistent with the sum of the cluster sizes in :attr:`nbrindex`,
-        as obtained from
-        :meth:`~pytential.linalg.TargetAndSourceClusterList.cluster_size`.
-
-    .. attribute:: nbrindex
-
-        A :class:`~pytential.linalg.TargetAndSourceClusterList` used to describe
-        the cluster interactions in :attr:`nbrmat`.
+    .. autoattribute:: pxy
+    .. autoattribute:: pxymat
+    .. autoattribute:: pxyindex
+    .. autoattribute:: nbrmat
+    .. autoattribute:: nbrindex
 
     .. automethod:: __getitem__
     """
 
     pxy: ProxyClusterGeometryData
-
-    pxymat: np.ndarray
+    """A :class:`~pytential.linalg.utils.ProxyClusterGeometryData` containing the
+    proxy points from which :attr:`pxymat` is obtained. This data is also
+    used to construct :attr:`nbrindex` and evaluate :attr:`nbrmat`.
+    """
+    pxymat: onp.Array1D[np.inexact]
+    """Interaction matrix between the proxy points and the source or
+    target points. This matrix is flattened to a shape of ``(nsize,)``,
+    which is consistent with the sum of the cluster sizes in :attr:`pxyindex`,
+    as obtained from
+    :meth:`~pytential.linalg.utils.TargetAndSourceClusterList.cluster_size`.
+    """
     pxyindex: TargetAndSourceClusterList
+    """A :class:`~pytential.linalg.utils.TargetAndSourceClusterList` used to
+    describe the cluster interactions in :attr:`pxymat`.
+    """
 
-    nbrmat: np.ndarray
+    nbrmat: onp.Array1D[np.inexact]
+    """Interaction matrix between the neighboring points and the source or
+    target points. This matrix is flattened to a shape of ``(nsize,)``,
+    which is consistent with the sum of the cluster sizes in :attr:`nbrindex`,
+    as obtained from
+    :meth:`~pytential.linalg.utils.TargetAndSourceClusterList.cluster_size`.
+    """
     nbrindex: TargetAndSourceClusterList
+    """A :class:`~pytential.linalg.utils.TargetAndSourceClusterList` used to
+    describe the cluster interactions in :attr:`nbrmat`.
+    """
 
-    def __getitem__(self, i: int) -> tuple[np.ndarray, np.ndarray]:
+    def __getitem__(self, i: int) -> tuple[onp.Array2D[np.inexact],
+                                           onp.Array2D[np.inexact]]:
         """
         :returns: a :class:`tuple` of ``(pxymat, nbrmat)`` containing the
             :math:`i`-th cluster interactions. The matrices are reshaped into
@@ -552,12 +562,11 @@ def _evaluate_proxy_skeletonization_interaction(
         actx: PyOpenCLArrayContext,
         places: GeometryCollection,
         proxy_generator: ProxyGeneratorBase,
-        wrangler: SkeletonizationWrangler,
         cluster_index: IndexList, *,
         evaluate_proxy: Callable[...,
-            tuple[np.ndarray, TargetAndSourceClusterList]],
+            tuple[onp.Array1D[np.inexact], TargetAndSourceClusterList]],
         evaluate_neighbor: Callable[...,
-            tuple[np.ndarray, TargetAndSourceClusterList]],
+            tuple[onp.Array1D[np.inexact], TargetAndSourceClusterList]],
         dofdesc: sym.DOFDescriptor | None = None,
         max_particles_in_box: int | None = None,
         ) -> _ProxyNeighborEvaluationResult:
@@ -568,7 +577,7 @@ def _evaluate_proxy_skeletonization_interaction(
     if cluster_index.nclusters == 1:
         raise ValueError("cannot make a proxy skeleton for a single cluster")
 
-    from pytential.linalg import gather_cluster_neighbor_points
+    from pytential.linalg.proxy import gather_cluster_neighbor_points
     pxy = proxy_generator(actx, dofdesc, cluster_index)
     nbrindex = gather_cluster_neighbor_points(
             actx, pxy,
@@ -602,7 +611,7 @@ def _skeletonize_block_by_proxy_with_mats(
     from functools import partial
     evaluate_skeletonization_interaction = partial(
             _evaluate_proxy_skeletonization_interaction,
-            actx, places, proxy_generator, wrangler,
+            actx, places, proxy_generator,
             dofdesc=wrangler.domains[ibcol],
             max_particles_in_box=max_particles_in_box)
 
@@ -625,14 +634,14 @@ def _skeletonize_block_by_proxy_with_mats(
                 ibrow=ibrow, ibcol=ibcol)
             )
 
-    src_skl_indices: np.ndarray = np.empty(nclusters, dtype=object)
-    tgt_skl_indices: np.ndarray = np.empty(nclusters, dtype=object)
-    skel_starts: np.ndarray = np.zeros(nclusters + 1, dtype=np.int32)
+    src_skl_indices = np.empty(nclusters, dtype=object)
+    tgt_skl_indices = np.empty(nclusters, dtype=object)
+    skel_starts = np.zeros(nclusters + 1, dtype=np.int32)
 
-    L: np.ndarray = np.empty(nclusters, dtype=object)
-    R: np.ndarray = np.empty(nclusters, dtype=object)
+    L = np.empty(nclusters, dtype=object)
+    R = np.empty(nclusters, dtype=object)
 
-    from pytential.linalg import interp_decomp
+    from pytential.linalg.utils import interp_decomp
 
     for i in range(nclusters):
         k = id_rank
@@ -656,7 +665,7 @@ def _skeletonize_block_by_proxy_with_mats(
 
         L[i] = interp.T
         tgt_skl_indices[i] = tgt_src_index.targets.cluster_indices(i)[idx[:k]]
-        assert L[i].shape == (tgt_mat.shape[0], k)
+        assert interp.shape == (k, tgt_mat.shape[0])
 
         # skeletonize source points
         k, idx, interp = interp_decomp(src_mat, rank=k, eps=None, rng=rng)
@@ -664,12 +673,13 @@ def _skeletonize_block_by_proxy_with_mats(
 
         R[i] = interp
         src_skl_indices[i] = tgt_src_index.sources.cluster_indices(i)[idx[:k]]
-        assert R[i].shape == (k, src_mat.shape[1])
+        assert interp.shape == (k, src_mat.shape[1])
 
         skel_starts[i + 1] = skel_starts[i] + k
         assert tgt_skl_indices[i].shape == src_skl_indices[i].shape
 
-    from pytential.linalg import make_index_list
+    from pytential.linalg.utils import make_index_list
+
     src_skl_index = make_index_list(np.hstack(list(src_skl_indices)), skel_starts)
     tgt_skl_index = make_index_list(np.hstack(list(tgt_skl_indices)), skel_starts)
     skel_tgt_src_index = TargetAndSourceClusterList(tgt_skl_index, src_skl_index)
@@ -692,7 +702,7 @@ class SkeletonizationResult:
 
     .. math::
 
-        A \approx L S R
+        A \approx D + L S R
 
     where :math:`S = A_{I, J}` for a subset :math:`I` and :math:`J` of the
     rows and columns of :math:`A`, respectively. This applies to each cluster
@@ -705,43 +715,37 @@ class SkeletonizationResult:
         Sij = skel_tgt_src_index.cluster_take(A, i, j)
         Aij_approx = L[i] @ Sij @ R[j]
 
-    .. attribute:: nclusters
+    .. autoproperty:: nclusters
 
-        Number of clusters that have been skeletonized.
-
-    .. attribute:: L
-
-        An object :class:`~numpy.ndarray` of size ``(nclusters,)``.
-
-    .. attribute:: R
-
-        An object :class:`~numpy.ndarray` of size ``(nclusters,)``.
-
-    .. attribute:: tgt_src_index
-
-        A :class:`~pytential.linalg.TargetAndSourceClusterList` representing the
-        indices in the original matrix :math:`A` that have been skeletonized.
-
-    .. attribute:: skel_tgt_src_index
-
-        A :class:`~pytential.linalg.TargetAndSourceClusterList` representing a
-        subset of :attr:`tgt_src_index`, i.e. the skeleton of each cluster of
-        :math:`A`. These indices can be used to reconstruct the :math:`S`
-        matrix.
+    .. autoattribute:: L
+    .. autoattribute:: R
+    .. autoattribute:: tgt_src_index
+    .. autoattribute:: skel_tgt_src_index
     """
 
-    L: np.ndarray
-    R: np.ndarray
+    L: obj_array.ObjectArray1D[onp.Array2D[Any]]
+    """An object :class:`~numpy.ndarray` of size ``(nclusters,)`` that contains
+    the left block interpolation matrices."""
+    R: obj_array.ObjectArray1D[onp.Array2D[Any]]
+    """An object :class:`~numpy.ndarray` of size ``(nclusters,)`` that contains
+    the right block interpolation matrices."""
 
     tgt_src_index: TargetAndSourceClusterList
+    """A :class:`~pytential.linalg.utils.TargetAndSourceClusterList` representing
+    the indices in the original matrix :math:`A` that have been skeletonized.
+    """
     skel_tgt_src_index: TargetAndSourceClusterList
+    """A :class:`~pytential.linalg.utils.TargetAndSourceClusterList` representing
+    a subset of :attr:`tgt_src_index`, i.e. the skeleton of each cluster of
+    :math:`A`. These indices can be used to reconstruct the :math:`S` matrix.
+    """
 
     # NOTE: these are meant only for testing! They contain the interactions
     # between the source / target points and their proxies / neighbors.
     _src_eval_result: _ProxyNeighborEvaluationResult | None = None
     _tgt_eval_result: _ProxyNeighborEvaluationResult | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if __debug__:
             nclusters = self.tgt_src_index.nclusters
             shape = (nclusters,)
@@ -758,7 +762,8 @@ class SkeletonizationResult:
                 raise ValueError(f"'R' has shape {self.R.shape}, expected {shape}")
 
     @property
-    def nclusters(self):
+    def nclusters(self) -> int:
+        """Number of clusters that have been skeletonized."""
         return self.tgt_src_index.nclusters
 
 
@@ -778,10 +783,11 @@ def skeletonize_by_proxy(
         id_eps: float | None = None,
         id_rank: int | None = None,
         rng: np.random.Generator | None = None,
-        max_particles_in_box: int | None = None) -> np.ndarray:
+        max_particles_in_box: int | None = None,
+    ) -> obj_array.ObjectArray2D[onp.Array2D[np.inexact]]:
     r"""Evaluate and skeletonize a symbolic expression using proxy-based methods.
 
-    :arg tgt_src_index: a :class:`~pytential.linalg.TargetAndSourceClusterList`
+    :arg tgt_src_index: a :class:`~pytential.linalg.utils.TargetAndSourceClusterList`
         indicating which indices participate in the skeletonization.
 
     :arg exprs: see :func:`make_skeletonization_wrangler`.
@@ -789,8 +795,8 @@ def skeletonize_by_proxy(
     :arg domains: see :func:`make_skeletonization_wrangler`.
     :arg context: see :func:`make_skeletonization_wrangler`.
 
-    :arg approx_nproxy: see :class:`~pytential.linalg.ProxyGenerator`.
-    :arg proxy_radius_factor: see :class:`~pytential.linalg.ProxyGenerator`.
+    :arg approx_nproxy: see :class:`~pytential.linalg.proxy.ProxyGenerator`.
+    :arg proxy_radius_factor: see :class:`~pytential.linalg.proxy.ProxyGenerator`.
 
     :arg id_eps: a floating point value used as a tolerance in skeletonizing
         each block in *tgt_src_index*.
@@ -809,7 +815,7 @@ def skeletonize_by_proxy(
             approx_nproxy=approx_nproxy,
             radius_factor=proxy_radius_factor)
 
-    skels: np.ndarray = np.empty((wrangler.nrows, wrangler.ncols), dtype=object)
+    skels = np.empty((wrangler.nrows, wrangler.ncols), dtype=object)
     for ibrow in range(wrangler.nrows):
         for ibcol in range(wrangler.ncols):
             skels[ibrow, ibcol] = _skeletonize_block_by_proxy_with_mats(

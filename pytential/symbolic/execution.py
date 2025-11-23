@@ -27,37 +27,51 @@ THE SOFTWARE.
 """
 
 import logging
-from typing import TYPE_CHECKING, Any, Generic, overload
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Generic, cast, overload
 
 import numpy as np
 from typing_extensions import override
 
+import pymbolic.primitives as p
 from arraycontext import (
     ArrayContext,
+    ArrayOrContainer,
     ArrayOrContainerOrScalar,
     PyOpenCLArrayContext,
     ScalarLike,
 )
 from meshmode.dof_array import DOFArray
+from pymbolic.geometric_algebra import componentwise
 from pymbolic.mapper.evaluator import EvaluationMapper as PymbolicEvaluationMapper
 from pytools import memoize_in, memoize_method
 
+import pytential.symbolic.primitives as pp
 from pytential import sym
 from pytential.qbx.cost import AbstractQBXCostModel
-from pytential.symbolic.compiler import Assign, Code, ComputePotential, Statement
+from pytential.symbolic.compiler import (
+    Assign,
+    Code,
+    CodeResultT,
+    ComputePotential,
+    Statement,
+)
+from pytential.symbolic.dof_connection import interleave_dof_arrays
 from pytential.symbolic.dof_desc import (
     _UNNAMED_SOURCE,
     _UNNAMED_TARGET,
     DOFDescriptor,
     DOFDescriptorLike,
 )
-from pytential.symbolic.primitives import OperandTc
+from pytential.symbolic.primitives import Operand, OperandTc
 
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping, Sequence
 
     import pymbolic.primitives as p
+    import pyopencl as cl
+    from meshmode.discretization import Discretization
     from pymbolic import ArithmeticExpression
     from pymbolic.geometric_algebra import MultiVector
     from pytools.obj_array import ObjectArrayND
@@ -96,6 +110,11 @@ class EvaluationMapperBoundOpCacheKey:
 # {{{ evaluation mapper base (shared, between actual eval and cost model)
 
 class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
+    array_context: PyOpenCLArrayContext
+    places: GeometryCollection
+    bound_expr: BoundExpression[pp.Operand]
+    queue: cl.CommandQueue
+
     def __init__(self, bound_expr, actx: PyOpenCLArrayContext, context=None,
             target_geometry=None,
             target_points=None, target_normals=None, target_tangents=None):
@@ -226,20 +245,20 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
     def map_elementwise_max(self, expr):
         return self._map_elementwise_reduction("max", expr)
 
-    def map_ones(self, expr):
-        discr = self.places.get_discretization(
+    def map_ones(self, expr: pp.Ones):
+        discr = self.places.get_target_or_discretization(
                 expr.dofdesc.geometry, expr.dofdesc.discr_stage)
         return self.array_context.np.ones_like(
             self.array_context.thaw(discr.nodes()[0]))
 
-    def map_node_coordinate_component(self, expr):
+    def map_node_coordinate_component(self, expr: pp.NodeCoordinateComponent):
         discr = self.places.get_discretization(
                 expr.dofdesc.geometry, expr.dofdesc.discr_stage)
 
         x = discr.nodes()[expr.ambient_axis]
         return self.array_context.thaw(x)
 
-    def map_num_reference_derivative(self, expr):
+    def map_num_reference_derivative(self, expr: pp.NumReferenceDerivative):
         from pytools import flatten
         ref_axes = flatten([axis] * mult for axis, mult in expr.ref_axes)
 
@@ -249,12 +268,12 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
 
         return num_reference_derivative(discr, ref_axes, self.rec(expr.operand))
 
-    def map_q_weight(self, expr):
+    def map_q_weight(self, expr: pp.QWeight):
         discr = self.places.get_discretization(
                 expr.dofdesc.geometry, expr.dofdesc.discr_stage)
         return self.array_context.thaw(discr.quad_weights())
 
-    def map_inverse(self, expr):
+    def map_inverse(self, expr: pp.IterativeInverse):
         bound_op_cache = self.bound_expr.places._get_cache(
                 EvaluationMapperBoundOpCacheKey)
 
@@ -262,12 +281,13 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
             bound_op = bound_op_cache[expr]
         except KeyError:
             bound_op = bind(
-                    expr.expression,
                     self.places.get_geometry(expr.dofdesc.geometry),
-                    self.bound_expr.iprec)
+                    expr.expression,
+                    )
             bound_op_cache[expr] = bound_op
 
-        scipy_op = bound_op.scipy_op(expr.variable_name, expr.dofdesc,
+        scipy_op = bound_op.scipy_op(
+                self.array_context, expr.variable_name, expr.dofdesc,
                 **{var_name: self.rec(var_expr)
                     for var_name, var_expr in expr.extra_vars.items()})
 
@@ -276,7 +296,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
         result = gmres(scipy_op, rhs)
         return result
 
-    def map_interpolation(self, expr):
+    def map_interpolation(self, expr: pp.Interpolation):
         operand = self.rec(expr.operand)
 
         if isinstance(operand,
@@ -289,21 +309,13 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
         else:
             raise TypeError(f"cannot interpolate '{type(operand).__name__}'")
 
-    def map_shape_discretization_property(self, expr):
-        discr = self.places.get_discretization(
-                expr.dofdesc.geometry, expr.dofdesc.discr_stage)
-
-        from pytools import single_valued
-        try:
-            shape_name = single_valued([
-                grp.mesh_el_group._modepy_shape_cls.__name__
-                for grp in discr.groups
-                ])
-        except AssertionError:
-            raise TypeError(
-                "non-homogeneous element groups are not supported") from None
-
-        return self.rec(expr.shape_name_to_expr[shape_name.lower()])
+    def map_interleave(self, expr: pp.Interleave):
+        return interleave_dof_arrays(
+                        self.places.get_discretization(
+                                    expr.from_dd.geometry, expr.from_dd.discr_stage),
+                        cast("DOFArray", self.rec(expr.operand_1)),
+                        cast("DOFArray", self.rec(expr.operand_2)),
+                    )
 
     def map_common_subexpression(self, expr):
         if expr.scope == sym.cse_scope.EXPRESSION:
@@ -319,7 +331,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
 
         from numbers import Number
         try:
-            rec = cache[key]
+            rec = cast("ArrayOrContainerOrScalar", cache[key])
             if (expr.scope == sym.cse_scope.DISCRETIZATION
                     and not isinstance(rec, Number)):
                 rec = self.array_context.thaw(rec)
@@ -338,7 +350,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
     def map_error_expression(self, expr):
         raise RuntimeError(expr.message)
 
-    def map_is_shape_class(self, expr):
+    def map_is_shape_class(self, expr: pp.IsShapeClass):
         discr = self.places.get_discretization(
             expr.dofdesc.geometry, expr.dofdesc.discr_stage)
 
@@ -363,7 +375,8 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
             self, actx: PyOpenCLArrayContext, insn, bound_expr, evaluate):
         raise NotImplementedError
 
-    def map_call(self, expr):
+    @override
+    def map_call(self, expr: p.Call):
         from pytential.symbolic.primitives import NumpyMathFunction
 
         if isinstance(expr.function, NumpyMathFunction):
@@ -480,6 +493,7 @@ class CostModelMapper(EvaluationMapperBase):
 
 # {{{ scipy-like mat-vec op
 
+@dataclass(frozen=True)
 class MatVecOp:
     """A :class:`scipy.sparse.linalg.LinearOperator` work-alike.
     Exposes a :mod:`pytential` operator as a generic matrix operation,
@@ -490,17 +504,14 @@ class MatVecOp:
     .. automethod:: matvec
     """
 
-    def __init__(self,
-            bound_expr, actx: PyOpenCLArrayContext,
-            arg_name, dtype, total_dofs, discrs, starts_and_ends, extra_args):
-        self.bound_expr = bound_expr
-        self.array_context = actx
-        self.arg_name = arg_name
-        self.dtype = dtype
-        self.total_dofs = total_dofs
-        self.discrs = discrs
-        self.starts_and_ends = starts_and_ends
-        self.extra_args = extra_args
+    bound_expr: BoundExpression[Operand]
+    array_context: PyOpenCLArrayContext
+    arg_name: str
+    dtype: np.dtype[Any]
+    total_dofs: int
+    discrs: Sequence[Discretization]
+    starts_and_ends: Sequence[tuple[int, int]]
+    extra_args: Mapping[str, object]
 
     @property
     def shape(self):
@@ -525,7 +536,7 @@ class MatVecOp:
 
     def unflatten(self, ary):
         # Convert a flat version of *ary* into a structured version.
-        components = []
+        components: list[ArrayOrContainer] = []
         for discr, (start, end) in zip(self.discrs, self.starts_and_ends, strict=True):
             component = ary[start:end]
 
@@ -567,7 +578,7 @@ class MatVecOp:
         else:
             raise ValueError(f"unsupported input type: {type(x).__name__}")
 
-        args = self.extra_args.copy()
+        args = dict(self.extra_args)
         args[self.arg_name] = self.unflatten(x) if flat else x
         result = self.bound_expr(self.array_context, **args)
 
@@ -636,7 +647,9 @@ def _prepare_auto_where(
     return (sym.as_dofdesc(auto_source), sym.as_dofdesc(auto_target))
 
 
-def _prepare_expr(places, expr, auto_where=None):
+def _prepare_expr(places: GeometryCollection,
+                  expr: OperandTc,
+                  auto_where: AutoWhereLike | None = None) -> OperandTc:
     """
     :arg places: :class:`~pytential.collection.GeometryCollection`.
     :arg expr: a symbolic expression.
@@ -647,9 +660,16 @@ def _prepare_expr(places, expr, auto_where=None):
     from pytential.source import LayerPotentialSourceBase
     from pytential.symbolic.mappers import DerivativeBinder, ToTargetTagger, flatten
 
-    expr = flatten(expr)
+    # FIXME: There's some mismatch between OperandTc and a conditional union
+    # type that I was too impatient to figure out in detail.
+    expr = componentwise(flatten, expr)  # pyright: ignore[reportAssignmentType]
     auto_source, auto_target = _prepare_auto_where(auto_where, places=places)
-    expr = ToTargetTagger(auto_source, auto_target)(expr)
+    expr = componentwise(  # pyright: ignore[reportAssignmentType]
+            ToTargetTagger(
+                    default_source=auto_source,
+                    default_target=auto_target
+                ).rec_arith,
+            expr)
     expr = DerivativeBinder()(expr)
 
     for name, place in places.places.items():
@@ -674,14 +694,14 @@ def _get_exec_function(stmt: Statement, exec_mapper):
     raise ValueError(f"unknown statement class: {type(stmt)}")
 
 
-def execute(code: Code, exec_mapper, pre_assign_check=None) -> np.ndarray:
+def execute(code: Code[CodeResultT], exec_mapper, pre_assign_check=None) -> np.ndarray:
     for name in code.inputs:
         if name not in exec_mapper.context:
             raise ValueError(f"missing input: '{name}'")
 
     context = exec_mapper.context
 
-    for stmt, discardable_vars in code._schedule:
+    for stmt, discardable_vars in code.schedule:
         for name in discardable_vars:
             del context[name]
 
@@ -763,18 +783,18 @@ class BoundExpression(Generic[OperandTc]):
     Created by calling :func:`pytential.bind`.
     """
 
-    def __init__(self, places, sym_op_expr):
+    def __init__(self, places: GeometryCollection, sym_op_expr: OperandTc) -> None:
         self.places: GeometryCollection = places
         self.sym_op_expr: OperandTc = sym_op_expr
-        self.caches: dict[Hashable, object] = {}
+        self.caches: dict[Hashable, dict[Hashable, object]] = {}
 
     @property
     @memoize_method
-    def code(self):
+    def code(self) -> Code[CodeResultT]:
         from pytential.symbolic.compiler import OperatorCompiler
         return OperatorCompiler(self.places)(self.sym_op_expr)
 
-    def _get_cache(self, name):
+    def _get_cache(self, name: Hashable) -> dict[Hashable, object]:
         return self.caches.setdefault(name, {})
 
     def cost_per_stage(self, calibration_params, **kwargs):

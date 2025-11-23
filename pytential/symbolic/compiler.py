@@ -24,22 +24,47 @@ THE SOFTWARE.
 """
 
 from dataclasses import dataclass
-from functools import reduce
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Generic, Literal, TypeVar, cast
 
 import numpy as np
+from typing_extensions import override
 
-from pymbolic.primitives import Subscript, Variable, cse_scope
+import pymbolic.primitives as prim
+from pymbolic import ArithmeticExpression
+from pytools.obj_array import ObjectArray, ObjectArray1D, ShapeT, from_numpy
 
 from pytential.symbolic.mappers import CachedIdentityMapper, DependencyMapper
-from pytential.symbolic.primitives import DOFDescriptor, IntG, NamedIntermediateResult
+from pytential.symbolic.primitives import (
+    DOFDescriptor,
+    IntG,
+    NamedIntermediateResult,
+    QBXForcedLimit,
+)
 
 
 if TYPE_CHECKING:
     from collections.abc import Collection, Hashable, Iterator, Sequence, Set
 
+    from pymbolic.geometric_algebra import MultiVector
+    from pymbolic.mapper.dependency import Dependency
     from pymbolic.typing import Expression
     from sumpy.kernel import Kernel
+
+    from pytential.collection import GeometryCollection
+    from pytential.symbolic.primitives import KernelArgumentMapping, Operand
+
+__doc__ = """
+.. autoclass:: Statement
+.. autoclass:: Assign
+.. autoclass:: PotentialOutput
+.. autoclass:: ComputePotential
+
+.. autofunction:: dot_dataflow_graph
+
+.. autoclass:: CodeResultT
+.. autoclass:: Code
+.. autoclass:: OperatorCompiler
+"""
 
 
 # {{{ statements
@@ -47,54 +72,72 @@ if TYPE_CHECKING:
 @dataclass(frozen=True, eq=False)
 class Statement:
     """
-    .. attribute:: names
-    .. attribute:: exprs
-    .. attribute:: priority
+    .. autoattribute:: names
+    .. autoattribute:: exprs
+    .. autoattribute:: priority
+
+    .. automethod:: get_assignees
+    .. automethod:: get_dependencies
     """
 
-    names: list[str]
-    exprs: list[Expression]
+    names: tuple[str, ...]
+    """Names of the variables used in this statement."""
+    exprs: tuple[Expression, ...]
+    """Expressions assigned to each variable name in :attr:`names`."""
     priority: int
+    """The priority of the statement."""
 
     def get_assignees(self) -> set[str]:
+        """
+        :returns: names of variables that are assigned to in this statement.
+        """
         raise NotImplementedError(
                 f"get_assignees for '{self.__class__.__name__}'")
 
-    def get_dependencies(self, dep_mapper: DependencyMapper) -> set[Variable]:
+    def get_dependencies(self, dep_mapper: DependencyMapper) -> set[prim.Variable]:
+        """
+        :returns: variables that are dependencies of the assignees.
+        """
         raise NotImplementedError(
                 f"get_dependencies for '{self.__class__.__name__}'")
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         raise NotImplementedError
 
 
 @dataclass(frozen=True, eq=False)
 class Assign(Statement):
     """
-    .. attribute:: do_not_return
-
-        A list of bools indicating whether the corresponding entry in
-        :attr:`Statement.names` and :attr:`Statement.exprs` describes an
-        expression that is not needed beyond this assignment.
+    .. autoattribute:: do_not_return
+    .. autoattribute:: comment
     """
 
-    do_not_return: list[bool] | None = None
+    do_not_return: tuple[bool, ...] | None = None
+    """A tuple of booleans indicating whether the corresponding entry in
+    :attr:`Statement.names` and :attr:`Statement.exprs` describes an
+    expression that is not needed beyond this assignment.
+    """
     comment: str = ""
+    """A string added as a comment before the assignment."""
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.do_not_return is None:
             object.__setattr__(self, "do_not_return", [False] * len(self.names))
 
-    def get_assignees(self):
+    @override
+    def get_assignees(self) -> set[str]:
         return set(self.names)
 
-    def get_dependencies(self, dep_mapper: DependencyMapper) -> set[Variable]:
-        from operator import or_
-        all_deps = reduce(or_, (dep_mapper(expr) for expr in self.exprs))
+    @override
+    def get_dependencies(self, dep_mapper: DependencyMapper) -> set[prim.Variable]:
+        all_deps: set[Dependency] = set()
+        for expr in self.exprs:
+            all_deps.update(dep_mapper(expr))
 
-        deps: set[Variable] = set()
+        deps: set[prim.Variable] = set()
         for dep in all_deps:
-            if isinstance(dep, Variable):
+            if isinstance(dep, prim.Variable):
                 if dep.name not in self.names:
                     deps.add(dep)
             else:
@@ -102,7 +145,8 @@ class Assign(Statement):
 
         return deps
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         comment = self.comment
 
         if len(self.names) == 1:
@@ -111,13 +155,16 @@ class Assign(Statement):
 
             return "{} <- {}{}".format(self.names[0], comment, self.exprs[0])
         else:
+            do_not_return = self.do_not_return
+            if do_not_return is None:
+                do_not_return = (True,) * len(self.names)
+
             if comment:
                 comment = f" /* {comment} */"
 
-            lines = []
+            lines: list[str] = []
             lines.append("{" + comment)
-            for n, e, dnr in zip(self.names, self.exprs, self.do_not_return,
-                                 strict=True):
+            for n, e, dnr in zip(self.names, self.exprs, do_not_return, strict=True):
                 if dnr:
                     dnr_indicator = "-#"
                 else:
@@ -128,7 +175,8 @@ class Assign(Statement):
 
             return "\n".join(lines)
 
-    def __hash__(self):
+    @override
+    def __hash__(self) -> int:
         return id(self)
 
 # }}}
@@ -139,83 +187,80 @@ class Assign(Statement):
 @dataclass(frozen=True)
 class PotentialOutput:
     """
-    .. attribute:: name
-
-        the name of the variable to which the result is assigned
-
-    .. attribute:: target_kernel_index
-
-    .. attribute:: target_name
-
-    .. attribute:: qbx_forced_limit
-
-        ``+1`` if the output is required to originate from a QBX center on the
-        "+" side of the boundary. ``-1`` for the other side. ``0`` if either
-        side of center (or no center at all) is acceptable.
+    .. autoattribute:: name
+    .. autoattribute:: target_kernel_index
+    .. autoattribute:: target_name
+    .. autoattribute:: qbx_forced_limit
     """
 
     name: str
+    """The name of the variable to which the result is assigned."""
     target_kernel_index: int
+    """An index into :attr:`ComputePotential.target_kernels`."""
     target_name: DOFDescriptor
-    qbx_forced_limit: int
+    """A descriptor for the geometry used by the target kernel."""
+
+    # This removes "avg" compared to QBXForcedLimit
+    qbx_forced_limit: Literal[-2, -1, +1, +2] | None
+    """The type of the limiting process used by the QBX expansion (``+1`` if the
+    output is required to originate from a QBX center on the "+" side of the
+    boundary. ``-1`` for the other side, etc.).
+    """
 
 
 @dataclass(frozen=True, eq=False)
 class ComputePotential(Statement):
     """
-    .. attribute:: outputs
-
-        A list of :class:`PotentialOutput` instances
-        The entries in the list correspond to :attr:`Statement.names`.
-
-    .. attribute:: target_kernels
-
-        A list of :class:`sumpy.kernel.Kernel` instances, indexed by
-        :attr:`PotentialOutput.target_kernel_index`.
-
-    .. attribute:: kernel_arguments
-
-        A dictionary mapping arg names to kernel arguments
-
-    .. attribute:: source_kernels
-
-        A list of :class:`sumpy.kernel.Kernel` instances with only source
-        derivatives and no target derivatives. See
-        :class:`pytential.symbolic.primitives.IntG` docstring for details.
-
-    .. attribute:: densities
-
-        A list of densities with the same number of entries as
-        :attr:`source_kernels`. See the :class:`pytential.symbolic.primitives.IntG`
-        docstring for details.
-
-    .. attribute:: source
+    .. autoattribute:: outputs
+    .. autoattribute:: target_kernels
+    .. autoattribute:: kernel_arguments
+    .. autoattribute:: source_kernels
+    .. autoattribute:: densities
+    .. autoattribute:: source
     """
 
-    outputs: list[PotentialOutput]
-    target_kernels: list[Kernel]
-    kernel_arguments: dict[str, Any]
-    source_kernels: list[Kernel]
-    densities: list[Expression]
+    outputs: tuple[PotentialOutput, ...]
+    """A tuple of :class:`PotentialOutput` instances. The entries in the list
+    correspond to :attr:`Statement.names`.
+    """
+    target_kernels: tuple[Kernel, ...]
+    """A tuple of :class:`sumpy.kernel.Kernel` instances, indexed by
+    :attr:`PotentialOutput.target_kernel_index`.
+    """
+    kernel_arguments: KernelArgumentMapping
+    """A dictionary mapping argument names to kernel arguments."""
+    source_kernels: tuple[Kernel, ...]
+    """A tuple of :class:`sumpy.kernel.Kernel` instances with only source
+    derivatives and no target derivatives. See the
+    :class:`~pytential.symbolic.primitives.IntG` docstring for details.
+    """
+    densities: tuple[ArithmeticExpression, ...]
+    """A tuple of densities with the same number of entries as :attr:`source_kernels`.
+    See the :class:`~pytential.symbolic.primitives.IntG` docstring for details.
+    """
     source: DOFDescriptor
+    """A descriptor for the geometry used by the source kernel."""
 
-    def get_assignees(self):
+    @override
+    def get_assignees(self) -> set[str]:
         return {o.name for o in self.outputs}
 
-    def get_dependencies(self, dep_mapper: DependencyMapper) -> set[Variable]:
+    @override
+    def get_dependencies(self, dep_mapper: DependencyMapper) -> set[prim.Variable]:
         from itertools import chain
 
-        result: set[Variable] = set()
+        result: set[prim.Variable] = set()
         for expr in chain(self.densities, self.kernel_arguments.values()):
             for dep in dep_mapper(expr):
-                if isinstance(dep, Variable):
+                if isinstance(dep, prim.Variable):
                     result.add(dep)
                 else:
                     raise TypeError(f"Unsupported dependency type: {type(dep)}")
 
         return result
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         args = [f"source={self.source}"]
         for i, density in enumerate(self.densities):
             args.append(f"density{i}={density}")
@@ -223,7 +268,7 @@ class ComputePotential(Statement):
         from pytential.symbolic.mappers import StringifyMapper, stringify_where
         strify = StringifyMapper()
 
-        lines = []
+        lines: list[str] = []
         for o in self.outputs:
             if o.target_name != self.source:
                 tgt_str = " @ {}".format(stringify_where(o.target_name))
@@ -238,16 +283,14 @@ class ComputePotential(Statement):
                 limit_str = "[(+)] "
             elif o.qbx_forced_limit == -2:
                 limit_str = "[(-)] "
-            elif o.qbx_forced_limit == "avg":
-                limit_str = "[avg] "
             elif o.qbx_forced_limit is None:
                 limit_str = ""
             else:
                 raise ValueError(f"unrecognized limit value: {o.qbx_forced_limit}")
 
             source_kernels_str = " + ".join([
-                f"density{i} * {source_kernel}" for i, source_kernel in
-                enumerate(self.source_kernels)
+                f"density{i} * {source_kernel}"
+                for i, source_kernel in enumerate(self.source_kernels)
             ])
             target_kernel = self.target_kernels[o.target_kernel_index]
             target_kernel_str = str(target_kernel)
@@ -255,9 +298,7 @@ class ComputePotential(Statement):
             kernel_str = target_kernel_str.replace(base_kernel_str,
                 f"({source_kernels_str})")
 
-            line = "{}{} <- {}{}".format(
-                    o.name, tgt_str, limit_str, kernel_str)
-
+            line = "{}{} <- {}{}".format(o.name, tgt_str, limit_str, kernel_str)
             lines.append(line)
 
         for arg_name, arg_expr in self.kernel_arguments.items():
@@ -268,7 +309,8 @@ class ComputePotential(Statement):
         return "{{ /* Pot({}) */\n  {}\n}}".format(
                 ", ".join(args), "\n  ".join(lines))
 
-    def __hash__(self):
+    @override
+    def __hash__(self) -> int:
         return id(self)
 
 # }}}
@@ -278,11 +320,11 @@ class ComputePotential(Statement):
 
 def dot_dataflow_graph(
         dep_mapper: DependencyMapper,
-        code: Code,
-        max_node_label_length: int = 30,
-        label_wrap_width: int = 50) -> str:
-    origins = {}
-    node_names = {}
+        code: Code[CodeResultT],
+        max_node_label_length: int | None = 30,
+        label_wrap_width: int | None = 50) -> str:
+    origins: dict[str, str] = {}
+    node_names: dict[Statement, str] = {}
 
     result = [
             'initial [label="initial"]'
@@ -298,8 +340,7 @@ def dot_dataflow_graph(
 
         if label_wrap_width is not None:
             from pytools import word_wrap
-            node_label = word_wrap(node_label, label_wrap_width,
-                    wrap_using="\n      ")
+            node_label = word_wrap(node_label, label_wrap_width, wrap_using="\n      ")
 
         node_label = node_label.replace("\n", "\\l") + "\\l"
 
@@ -309,14 +350,15 @@ def dot_dataflow_graph(
         for assignee in insn.get_assignees():
             origins[assignee] = node_name
 
-    def get_orig_node(expr):
+    def get_orig_node(expr: Expression) -> str:
         from pymbolic.primitives import Variable
+
         if isinstance(expr, Variable):
             return origins.get(expr.name, "initial")
         else:
             return "initial"
 
-    def gen_expr_arrow(expr, target_node):
+    def gen_expr_arrow(expr: Expression, target_node: str) -> None:
         orig_node = get_orig_node(expr)
         result.append(f'{orig_node} -> {target_node} [label="{expr}"];')
 
@@ -326,7 +368,7 @@ def dot_dataflow_graph(
 
     code_res = code.result
 
-    if isinstance(code_res, np.ndarray) and code_res.dtype.char == "O":
+    if isinstance(code_res, ObjectArray):
         for subexp in code_res:
             gen_expr_arrow(subexp, "result")
     else:
@@ -339,26 +381,40 @@ def dot_dataflow_graph(
 
 # {{{ code representation
 
-class Code:
-    def __init__(
-            self,
-            inputs: Set[str],
-            schedule: Sequence[tuple[Statement, Collection[str]]],
-            result: np.ndarray,
-           ) -> None:
-        self.inputs = inputs
-        self._schedule = schedule
-        self.result = result
+CodeResultT = TypeVar("CodeResultT",
+                "ArithmeticExpression",
+                "ObjectArray1D[ArithmeticExpression]",
+                "MultiVector[ArithmeticExpression]")
+"""An invariant :class:`TypeVar` result expressions from :class:`Code`."""
+
+
+@dataclass(frozen=True)
+class Code(Generic[CodeResultT]):
+    """
+    .. autoattribute:: inputs
+    .. autoattribute:: schedule
+    .. autoattribute:: result
+
+    .. autoproperty:: statements
+    """
+
+    inputs: set[str]
+    """A set of variable names required for this code block."""
+    schedule: Sequence[tuple[Statement, Collection[str]]]
+    """A sequence of statements and corresponding variables."""
+    result: CodeResultT
+    """Result expression for the code block."""
 
     @property
     def statements(self) -> list[Statement]:
-        return [stmt for stmt, _discardable_vars in self._schedule]
+        return [stmt for stmt, _discardable_vars in self.schedule]
 
+    @override
     def __str__(self) -> str:
-        lines = []
+        lines: list[str] = []
         for insn in self.statements:
             lines.extend(str(insn).split("\n"))
-        lines.append("RESULT: " + str(self.result))
+        lines.append(f"RESULT: {self.result}")
 
         return "\n".join(lines)
 
@@ -374,7 +430,7 @@ class _NoStatementAvailableError(Exception):
 def _get_next_step(
         dep_mapper: DependencyMapper,
         statements: Sequence[Statement],
-        result: np.ndarray,
+        result: CodeResultT,
         available_names: Set[str],
         done_stmts: Set[Statement]
         ) -> tuple[Statement, set[str]]:
@@ -400,37 +456,35 @@ def _get_next_step(
 
     # {{{ make sure results do not get discarded
 
-    from pytools import obj_array
-
     from pytential.symbolic.mappers import DependencyMapper
     dm = DependencyMapper(composite_leaves=False)
 
-    def remove_result_variable(result_expr):
+    def remove_result_variable(result_expr: Expression) -> None:
         # The extra dependency mapper run is necessary
         # because, for instance, subscripts can make it
         # into the result expression, which then does
         # not consist of just variables.
 
         for var in dm(result_expr):
-            assert isinstance(var, Variable)
+            assert isinstance(var, prim.Variable)
             discardable_vars.discard(var.name)
 
+    from pytools import obj_array
     obj_array.vectorize(remove_result_variable, result)
 
     # }}}
 
-    return argmax2(available_stmts), discardable_vars
+    return argmax2(available_stmts, return_value=False), discardable_vars
 
 
 def _compute_schedule(
         dep_mapper: DependencyMapper,
         statements: Sequence[Statement],
-        result: np.ndarray,
+        result: CodeResultT,
         ) -> tuple[set[str], list[tuple[Statement, set[str]]]]:
     # FIXME: I'm O(n**2). I want to be replaced with a normal topological sort.
 
-    schedule = []
-
+    schedule: list[tuple[Statement, set[str]]] = []
     done_stmts: set[Statement] = set()
 
     inputs: set[str] = {
@@ -470,9 +524,41 @@ def _compute_schedule(
 # {{{ compiler
 
 class OperatorCompiler(CachedIdentityMapper):
+    """
+    .. autoattribute:: places
+    .. autoattribute:: prefix
+    .. autoattribute:: code
+    .. autoattribute:: expr_to_var
+    .. autoattribute:: assigned_names
+    .. autoattribute:: group_to_operators
+    .. autoattribute:: dep_mapper
+    """
+
+    places: GeometryCollection
+    """A geometry collection used to evaluate a given expression."""
+    prefix: str
+    """A prefix for variables generated by the compiler."""
+
+    code: list[Statement]
+    """A list of statements accumulated during the expression traversal."""
+    expr_to_var: dict[Expression, prim.Variable | prim.Subscript]
+    """A mapping of expressions that have been assigned to variables."""
+    assigned_names: set[str]
+    """A set of names that have already been assigned to variables in
+    :attr:`expr_to_var`.
+    """
+    group_to_operators: dict[Hashable, set[IntG]]
+    """A mapping of unique identifiers to
+    :class:`~pytential.symbolic.primitives.IntG` instances found in the
+    expression.
+    """
+    dep_mapper: DependencyMapper
+    """A dependency mapper used to construct the schedule to evaluate the
+    statements in :attr:`code`."""
+
     def __init__(
             self,
-            places,
+            places: GeometryCollection,
             prefix: str = "_expr",
             ) -> None:
         super().__init__()
@@ -480,26 +566,31 @@ class OperatorCompiler(CachedIdentityMapper):
         self.places = places
         self.prefix = prefix
 
-        self.code: list[Statement] = []
-        self.expr_to_var: dict[Expression, Variable] = {}
-        self.assigned_names: set[str] = set()
-        self.group_to_operators: dict[Hashable, set[IntG]] = {}
+        self.code = []
+        self.expr_to_var = {}
+        self.assigned_names = set()
+        self.group_to_operators = {}
         self.dep_mapper = DependencyMapper(
                 # include_operator_bindings=False,
                 include_lookups=False,
                 include_subscripts=False,
                 include_calls="descend_args")
 
-    def op_group_features(self, expr) -> Hashable:
+    def op_group_features(self, expr: IntG) -> Hashable:
+        from pytential.source import PotentialSource
         from pytential.symbolic.primitives import hashable_kernel_args
+
         lpot_source = self.places.get_geometry(expr.source.geometry)
+        assert isinstance(lpot_source, PotentialSource)
+
         return (
                 lpot_source.op_group_features(expr)
                 + hashable_kernel_args(expr.kernel_arguments))
 
     # {{{ top-level driver
 
-    def __call__(self, expr):
+    @override
+    def __call__(self, expr: CodeResultT) -> Code[CodeResultT]:
         # {{{ collect operators by operand
 
         from pytential.symbolic.mappers import OperatorCollector
@@ -517,7 +608,7 @@ class OperatorCompiler(CachedIdentityMapper):
 
         # Traverse the expression, generate code.
 
-        result = super().__call__(expr)
+        result = cast("CodeResultT", super().__call__(expr))
 
         inputs, schedule = _compute_schedule(self.dep_mapper, self.code, result)
         return Code(inputs, schedule, result)
@@ -540,6 +631,7 @@ class OperatorCompiler(CachedIdentityMapper):
                 yield f"{self.prefix}{i}"
                 i += 1
 
+        name = ""
         if prefix is None:
             for name in generate_plain_names():
                 if name not in self.assigned_names:
@@ -557,16 +649,20 @@ class OperatorCompiler(CachedIdentityMapper):
             self, name: str, expr: Expression, priority: int,
             ) -> Assign:
         return Assign(
-                names=[name], exprs=[expr],
+                names=(name,),
+                exprs=(expr,),
                 priority=priority)
 
     def assign_to_new_var(
-            self, expr: Expression, priority: int = 0, prefix: str | None = None,
-            ) -> Variable | Subscript:
+            self,
+            expr: Expression,
+            priority: int = 0,
+            prefix: str | None = None,
+        ) -> prim.Variable | prim.Subscript:
         # Observe that the only things that can be legally subscripted
         # are variables. All other expressions are broken down into
         # their scalar components.
-        if isinstance(expr, Variable | Subscript):
+        if isinstance(expr, prim.Variable | prim.Subscript):
             return expr
 
         new_name = self.get_var_name(prefix)
@@ -578,28 +674,41 @@ class OperatorCompiler(CachedIdentityMapper):
 
     # {{{ map_xxx routines
 
-    def map_sum(self, expr):
+    @override
+    def map_sum(self, expr: prim.Sum) -> Expression:
         # create temporaries so that the scheduler can optimize
         # the life-time of the dependencies
         result = self.assign_to_new_var(self.rec(expr.children[0]))
         for child in expr.children[1:]:
-            result = type(expr)((result, self.rec(child)))
+            child = self.rec(child)
+            assert prim.is_arithmetic_expression(child)
+
+            result = prim.Sum((result, child))
             result = self.assign_to_new_var(result)
+
         return result
 
-    def map_numpy_array(self, expr):
+    @override
+    def map_numpy_array(
+            self, expr: ObjectArray[ShapeT, Expression],
+        ) -> ObjectArray[ShapeT, Expression]:
         # create temporaries so that the scheduler can optimize
         # the life-time of the dependencies
         result = np.empty(expr.shape, dtype=object)
         for i in np.ndindex(expr.shape):
             result[i] = self.assign_to_new_var(self.rec(expr[i]))
-        return result
 
-    def map_common_subexpression(self, expr):
+        from pymbolic.typing import Expression
+        return from_numpy(result, Expression)
+
+    @override
+    def map_common_subexpression(
+            self, expr: prim.CommonSubexpression,
+        ) -> Expression:
         # NOTE: EXPRESSION and DISCRETIZATION scopes are handled in
         # execution.py::EvaluationMapperBase so that they can be cached
         # with a longer lifetime
-        if expr.scope != cse_scope.EVALUATION:
+        if expr.scope != prim.cse_scope.EVALUATION:
             return expr
 
         try:
@@ -619,59 +728,68 @@ class OperatorCompiler(CachedIdentityMapper):
 
             cse_var = self.assign_to_new_var(rec_child,
                     priority=priority, prefix=expr.prefix)
+            assert isinstance(cse_var, prim.Variable | prim.Subscript)
 
             self.expr_to_var[expr.child] = cse_var
             return cse_var
 
-    def map_int_g(self, expr, name_hint=None):
+    @override
+    def map_int_g(
+            self, expr: IntG, name_hint: str | None = None,
+        ) -> ArithmeticExpression:
         try:
             return self.expr_to_var[expr]
         except KeyError:
             from pytential.utils import sort_arrays_together
-            source_kernels, densities = \
-                sort_arrays_together(expr.source_kernels, expr.densities, key=str)
+            source_kernels, densities = sort_arrays_together(
+                expr.source_kernels, expr.densities, key=str)
+
             # make sure operator assignments stand alone and don't get muddled
             # up in vector arithmetic
-            density_vars = [self.assign_to_new_var(self.rec(density)) for
-                density in densities]
+            density_vars = [
+                self.assign_to_new_var(self.rec(density))
+                for density in densities]
 
             group = self.group_to_operators[self.op_group_features(expr)]
-            names = [self.get_var_name() for op in group]
+            names = [self.get_var_name() for _op in group]
 
             sorted_ops = sorted(group, key=lambda op: repr(op.target_kernel))
             target_kernels = [op.target_kernel for op in sorted_ops]
 
-            target_kernel_to_index = \
-                {kernel: i for i, kernel in enumerate(target_kernels)}
+            target_kernel_to_index = {
+                kernel: i for i, kernel in enumerate(target_kernels)}
 
             for op in group:
                 assert op.qbx_forced_limit in [-2, -1, None, 1, 2]
 
             kernel_arguments = {
-                    arg_name: self.rec(arg_val)
+                    arg_name: cast("Operand", self.rec(arg_val))
                     for arg_name, arg_val in expr.kernel_arguments.items()}
 
-            outputs = [
+            def not_avg(qbxfl: QBXForcedLimit):
+                assert qbxfl != "avg"
+                return qbxfl
+
+            outputs = tuple(
                 PotentialOutput(
                     name=name,
                     target_kernel_index=target_kernel_to_index[op.target_kernel],
                     target_name=op.target,
-                    qbx_forced_limit=op.qbx_forced_limit,
+                    qbx_forced_limit=not_avg(op.qbx_forced_limit),
                     )
-                for name, op in zip(names, group, strict=True)
-                ]
+                for name, op in zip(names, group, strict=True))
 
             self.code.append(
                     ComputePotential(
                         # NOTE: these are set to None because they are deduced
                         # from `outputs` in `get_assignees` and `get_dependencies`
-                        names=None,
+                        names=tuple(o.name for o in outputs),
                         exprs=None,
                         outputs=outputs,
                         target_kernels=tuple(target_kernels),
                         kernel_arguments=kernel_arguments,
-                        source_kernels=source_kernels,
-                        densities=density_vars,
+                        source_kernels=tuple(source_kernels),
+                        densities=tuple(density_vars),
                         source=expr.source,
                         priority=max(getattr(op, "priority", 0) for op in group),
                         ))
@@ -681,7 +799,7 @@ class OperatorCompiler(CachedIdentityMapper):
 
             return self.expr_to_var[expr]
 
-    def map_int_g_ds(self, op):
+    def map_int_g_ds(self, op: object) -> Expression:
         raise AssertionError()
 
     # }}}

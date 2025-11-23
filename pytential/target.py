@@ -52,6 +52,7 @@ from pytools import T
 if TYPE_CHECKING:
     from arraycontext import Array
     from pytools import T
+    from pytools.obj_array import ObjectArray1D
 
     from pytential.collection import GeometryCollection
 
@@ -74,7 +75,7 @@ class TargetBase(ABC):
         """Number of points (DOFs) in the target geometry."""
 
     @abstractmethod
-    def nodes(self) -> Array:
+    def nodes(self) -> Array | ObjectArray1D[Array]:
         """
         :returns: an array of points of shape ``[ambient_dim, ndofs]`` that
             form the target geometry.
@@ -110,7 +111,7 @@ class PointsTarget(TargetBase):
     @property
     def ndofs(self) -> int:
         # NOTE: arraycontext.Array is not iterable theoretically
-        for coord_ary in self._nodes:   # type: ignore[attr-defined]
+        for coord_ary in self._nodes:
             return coord_ary.shape[0]
 
         raise AttributeError

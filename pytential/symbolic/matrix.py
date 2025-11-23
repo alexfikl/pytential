@@ -73,6 +73,7 @@ if TYPE_CHECKING:
 
     from meshmode.discretization import Discretization
 
+    import pytential.symbolic.primitives as prim
     from pytential.collection import GeometryCollection
     from pytential.linalg.utils import TargetAndSourceClusterList
     from pytential.symbolic.primitives import Variable
@@ -295,7 +296,7 @@ class MatrixBuilderBase(EvaluationRewriterBase):
 
 class ClusterMatrixBuilderBase(MatrixBuilderBase):
     """Evaluate individual clusters of a matrix operator, as defined by a
-    :class:`~pytential.linalg.TargetAndSourceClusterList`.
+    :class:`~pytential.linalg.utils.TargetAndSourceClusterList`.
 
     Unlike, e.g. :class:`MatrixBuilder`, matrix cluster builders are
     significantly reduced in scope. They are basically just meant
@@ -315,7 +316,8 @@ class ClusterMatrixBuilderBase(MatrixBuilderBase):
                  tgt_src_index: TargetAndSourceClusterList,
                  context: dict[str, Any]) -> None:
         """
-        :arg tgt_src_index: a :class:`~pytential.linalg.TargetAndSourceClusterList`
+        :arg tgt_src_index: a
+            :class:`~pytential.linalg.utils.TargetAndSourceClusterList`
             class describing which clusters are going to be evaluated.
         """
 
@@ -336,7 +338,7 @@ class ClusterMatrixBuilderBase(MatrixBuilderBase):
                 self.tgt_src_index, self.context)
 
     def get_dep_variable(self):
-        from pytential.linalg import make_index_cluster_cartesian_product
+        from pytential.linalg.utils import make_index_cluster_cartesian_product
         actx = self.array_context
         tgtindices, srcindices = (
                 make_index_cluster_cartesian_product(actx, self.tgt_src_index)
@@ -656,9 +658,9 @@ class QBXClusterMatrixBuilder(ClusterMatrixBuilderBase):
 
     def map_int_g(self, expr):
         lpot_source = self.places.get_geometry(expr.source.geometry)
-        source_discr = self.places.get_discretization(
+        source_discr = self.places.get_source_or_discretization(
                 expr.source.geometry, expr.source.discr_stage)
-        target_discr = self.places.get_discretization(
+        target_discr = self.places.get_target_or_discretization(
                 expr.target.geometry, expr.target.discr_stage)
 
         if self.weighted and source_discr is not target_discr:
@@ -679,7 +681,7 @@ class QBXClusterMatrixBuilder(ClusterMatrixBuilderBase):
 
             # {{{ geometry
 
-            from pytential.linalg import make_index_cluster_cartesian_product
+            from pytential.linalg.utils import make_index_cluster_cartesian_product
             tgtindices, srcindices = make_index_cluster_cartesian_product(
                     actx, self.tgt_src_index)
 
@@ -766,10 +768,10 @@ class P2PClusterMatrixBuilder(ClusterMatrixBuilderBase):
         self.exclude_self = exclude_self
         self.weighted = _weighted
 
-    def map_int_g(self, expr):
-        source_discr = self.places.get_discretization(
+    def map_int_g(self, expr: prim.IntG):
+        source_discr = self.places.get_source_or_discretization(
                 expr.source.geometry, expr.source.discr_stage)
-        target_discr = self.places.get_discretization(
+        target_or_discr = self.places.get_target_or_discretization(
                 expr.target.geometry, expr.target.discr_stage)
 
         actx = self.array_context
@@ -786,7 +788,7 @@ class P2PClusterMatrixBuilder(ClusterMatrixBuilderBase):
 
             # {{{ geometry
 
-            from pytential.linalg import make_index_cluster_cartesian_product
+            from pytential.linalg.utils import make_index_cluster_cartesian_product
             tgtindices, srcindices = make_index_cluster_cartesian_product(
                     actx, self.tgt_src_index)
 
@@ -809,7 +811,7 @@ class P2PClusterMatrixBuilder(ClusterMatrixBuilderBase):
             # {{{ kernel args
 
             # NOTE: copied from pytential.symbolic.primitives.IntG
-            kernel_args = base_kernel.get_args() + base_kernel.get_source_args()
+            kernel_args = [*base_kernel.get_args(), *base_kernel.get_source_args()]
             kernel_args = {arg.loopy_arg.name for arg in kernel_args}
 
             kernel_args = _get_layer_potential_args(
@@ -818,13 +820,13 @@ class P2PClusterMatrixBuilder(ClusterMatrixBuilderBase):
 
             if self.exclude_self:
                 kernel_args["target_to_source"] = actx.from_numpy(
-                        np.arange(0, target_discr.ndofs, dtype=np.int64)
+                        np.arange(0, target_or_discr.ndofs, dtype=np.int64)
                         )
 
             # }}}
 
             _, (mat,) = mat_gen(actx.queue,
-                    targets=flatten(target_discr.nodes(), actx, leaf_class=DOFArray),
+                    targets=flatten(target_or_discr.nodes(), actx, leaf_class=DOFArray),
                     sources=flatten(source_discr.nodes(), actx, leaf_class=DOFArray),
                     tgtindices=tgtindices,
                     srcindices=srcindices,

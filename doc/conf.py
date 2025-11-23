@@ -13,8 +13,8 @@ version = ".".join(release.split(".")[:2])
 
 autodoc_type_aliases = {
         "GeometryLike": "pytential.collection.GeometryLike",
-        "DiscretizationStages": "pytential.symbolic.dof_desc.DiscretizationStages",
-        "DOFGranularities": "pytential.symbolic.dof_desc.DOFGranularities",
+        "DiscretizationStage": "pytential.symbolic.dof_desc.DiscretizationStage",
+        "DOFGranularity": "pytential.symbolic.dof_desc.DOFGranularity",
         "DOFDescriptorLike": "pytential.symbolic.dof_desc.DOFDescriptorLike",
         }
 
@@ -38,43 +38,89 @@ nitpick_ignore_regex = [
     # Sphinx started complaining about these in 8.2.1(-ish)
     # -AK, 2025-02-24
     ["py:class", r"TypeAliasForwardRef"],
-    ["py:class", r"arraycontext.typing._UserDefinedArrayContainer"],
+    ["py:class", r"_ProxyNeighborEvaluationResult"],
     ["py:class", r"arraycontext.typing._UserDefinedArithArrayContainer"],
-    ["py:class", r"T"],
+    ["py:class", r"arraycontext.typing._UserDefinedArrayContainer"],
+    ["py:class", r".*DependencyMapper"],
+    ["py:class", r".*EvaluationMapperBase"],
+    # optype is missing sphinx docs
+    # https://github.com/jorenham/optype/issues/430
+    ["py:class", r"optype.*"],
+    ["py:class", r"onp.*"],
 ]
 
 
 sphinxconfig_missing_reference_aliases = {
     # numpy
     "NDArray": "obj:numpy.typing.NDArray",
+    "np.integer": "obj:numpy.integer",
+    "np.floating": "obj:numpy.floating",
+    "np.inexact": "obj:numpy.inexact",
+    "np.dtype": "class:numpy.dtype",
+    "np.random.Generator": "class:numpy.random.Generator",
     # pytools
     "ObjectArrayND": "obj:pytools.obj_array.ObjectArrayND",
+    "T": "obj:pytools.T",
+    "P": "obj:pytools.P",
+    "ObjectArray1D": "obj:pytools.obj_array.ObjectArray1D",
+    "obj_array.ObjectArray1D": "obj:pytools.obj_array.ObjectArray1D",
+    "obj_array.ObjectArray2D": "obj:pytools.obj_array.ObjectArray2D",
     # pyopencl
     "WaitList": "obj:pyopencl.WaitList",
+    "cl_array.Array": "obj:pyopencl.array.Array",
     # pymbolic
-    "Variable": "class:pymbolic.primitives.Variable",
-    "Expression": "obj:pymbolic.typing.Expression",
     "ArithmeticExpression": "obj:pymbolic.ArithmeticExpression",
+    "Expression": "obj:pymbolic.typing.Expression",
     "MultiVector": "obj:pymbolic.geometric_algebra.MultiVector",
+    "Variable": "class:pymbolic.primitives.Variable",
+    "prim.Subscript": "class:pymbolic.primitives.Subscript",
+    "prim.Variable": "class:pymbolic.primitives.Variable",
+    "ArithmeticExpressionContainerTc":
+        "obj:pymbolic.typing.ArithmeticExpressionContainerTc",
     # arraycontext
-    "ScalarLike": "obj:arraycontext.ScalarLike",
+    "ArrayContainer": "obj:arraycontext.ArrayContainer",
     "ArrayOrContainerOrScalar": "obj:arraycontext.ArrayOrContainerOrScalar",
+    "ArrayOrContainerT": "obj:arraycontext.ArrayOrContainerT",
     "PyOpenCLArrayContext": "class:arraycontext.PyOpenCLArrayContext",
+    "ScalarLike": "obj:arraycontext.ScalarLike",
     # modepy
     "mp.Shape": "class:modepy.Shape",
     # meshmode
     "Discretization": "class:meshmode.discretization.Discretization",
     "DOFArray": "class:meshmode.dof_array.DOFArray",
+    # boxtree
+    "FromSepSmallerCrit": "obj:boxtree.traversal.FromSepSmallerCrit",
+    "TimingResult": "class:boxtree.timing.TimingResult",
+    "TreeKind": "obj:boxtree.tree_build.TreeKind",
     # sumpy
-    "Kernel": "class:sumpy.kernel.Kernel",
-    "P2PBase": "class:sumpy.p2p.P2PBase",
+    "ExpansionBase": "class:sumpy.expansion.ExpansionBase",
     "ExpansionFactoryBase": "class:sumpy.expansion.ExpansionFactoryBase",
+    "Kernel": "class:sumpy.kernel.Kernel",
+    "HelmholtzKernel": "class:sumpy.kernel.HelmholtzKernel",
+    "P2P": "class:sumpy.p2p.P2P",
+    "P2PBase": "class:sumpy.p2p.P2PBase",
+    "FMMLevelToOrder": "class:sumpy.fmm.FMMLevelToOrder",
     # pytential
-    "sym.IntG": "class:pytential.symbolic.primitives.IntG",
-    "sym.DOFDescriptor": "class:pytential.symbolic.dof_desc.DOFDescriptor",
+    "ExpressionNode": "class:pytential.symbolic.primitives.ExpressionNode",
+    "DOFDescriptorLike": "data:pytential.symbolic.dof_desc.DOFDescriptorLike",
+    "DOFGranularity": "data:pytential.symbolic.dof_desc.DOFGranularity",
+    "DiscretizationStage": "data:pytential.symbolic.dof_desc.DiscretizationStage",
+    "GeometryId": "data:pytential.symbolic.dof_desc.GeometryId",
+    "KernelArgumentLike": "obj:pytential.symbolic.primitives.KernelArgumentLike",
+    "KernelArgumentMapping": "obj:pytential.symbolic.primitives.KernelArgumentMapping",
     "Operand": "obj:pytential.symbolic.primitives.Operand",
+    "PotentialMapper": "obj:pytential.symbolic.pde.scalar.PotentialMapper",
     "QBXForcedLimit": "obj:pytential.symbolic.primitives.QBXForcedLimit",
+    "Side": "obj:pytential.symbolic.primitives.Side",
     "TargetOrDiscretization": "obj:pytential.target.TargetOrDiscretization",
+    "VectorExpression": "obj:pytential.symbolic.pde.scalar.VectorExpression",
+    "pytential.symbolic.dof_desc.DOFDescriptorLike":
+        "data:pytential.symbolic.dof_desc.DOFDescriptorLike",
+    "pytential.symbolic.primitives.ExpressionNode":
+        "class:pytential.symbolic.primitives.ExpressionNode",
+    "sym.DOFDescriptor": "class:pytential.symbolic.dof_desc.DOFDescriptor",
+    "sym.IntG": "class:pytential.symbolic.primitives.IntG",
+    "sym.var": "obj:pytential.symbolic.primitives.var",
 }
 
 

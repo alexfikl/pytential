@@ -84,6 +84,7 @@ class StokesletWrapperBase(ABC):  # noqa: B024
     .. automethod:: apply_derivative
     .. automethod:: apply_stress
     """
+
     def __init__(self, dim, mu_sym, nu_sym):
         self.dim = dim
         self.mu = mu_sym
@@ -186,6 +187,7 @@ class StressletWrapperBase(ABC):  # noqa: B024
     .. automethod:: apply_derivative
     .. automethod:: apply_stress
     """
+
     def __init__(self, dim, mu_sym, nu_sym):
         self.dim = dim
         self.mu = mu_sym

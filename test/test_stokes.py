@@ -30,7 +30,11 @@ import extra_int_eq_data as eid
 import numpy as np
 import pytest
 
-from arraycontext import flatten, pytest_generate_tests_for_array_contexts
+from arraycontext import (
+    ArrayContextFactory,
+    flatten,
+    pytest_generate_tests_for_array_contexts,
+)
 from meshmode import _acf  # noqa: F401  # noqa: F401  # noqa: F401
 from meshmode.discretization import Discretization
 from meshmode.discretization.poly_element import InterpolatoryQuadratureGroupFactory
@@ -38,12 +42,10 @@ from pytools import obj_array
 from sumpy.symbolic import SpatialConstant
 
 from pytential import GeometryCollection, bind, sym
+from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
 
 
 logger = logging.getLogger(__name__)
-
-from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
-
 
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
     "pyopencl-deprecated",
@@ -321,7 +323,12 @@ def run_exterior_stokes(actx_factory, *,
     (3, "biharmonic", 0.4),
     (3, "laplace", 0.4),
     ])
-def test_exterior_stokes(actx_factory, ambient_dim, method, nu, visualize=False):
+def test_exterior_stokes(
+            actx_factory: ArrayContextFactory,
+            ambient_dim: int,
+            method: str,
+            nu: float,
+            visualize=False):
     if visualize:
         logging.basicConfig(level=logging.INFO)
 
@@ -477,7 +484,10 @@ class StokesletIdentity:
     partial(eid.StarfishTestCase, resolutions=[16, 32, 64, 96, 128]),
     partial(eid.SpheroidTestCase, resolutions=[0, 1, 2]),
     ])
-def test_stokeslet_identity(actx_factory, cls, visualize=False):
+def test_stokeslet_identity(
+            actx_factory: ArrayContextFactory,
+            cls,
+            visualize=False):
     if visualize:
         logging.basicConfig(level=logging.INFO)
 
@@ -485,7 +495,7 @@ def test_stokeslet_identity(actx_factory, cls, visualize=False):
     case = cls(fmm_backend=None,
             target_order=5, qbx_order=3, source_ovsmp=source_ovsmp)
     identity = StokesletIdentity(case.ambient_dim)
-    logger.info("\n%s", str(case))
+    logger.info("\n%s", case)
 
     from pytools.convergence import EOCRecorder
     eocs = [EOCRecorder() for _ in range(case.ambient_dim)]
@@ -536,7 +546,10 @@ class StressletIdentity:
     partial(eid.StarfishTestCase, resolutions=[16, 32, 64, 96, 128]),
     partial(eid.SpheroidTestCase, resolutions=[0, 1, 2]),
     ])
-def test_stresslet_identity(actx_factory, cls, visualize=False):
+def test_stresslet_identity(
+            actx_factory: ArrayContextFactory,
+            cls,
+            visualize=False):
     if visualize:
         logging.basicConfig(level=logging.INFO)
 
@@ -544,7 +557,7 @@ def test_stresslet_identity(actx_factory, cls, visualize=False):
     case = cls(fmm_backend=None,
             target_order=5, qbx_order=3, source_ovsmp=source_ovsmp)
     identity = StressletIdentity(case.ambient_dim)
-    logger.info("\n%s", str(case))
+    logger.info("\n%s", case)
 
     from pytools.convergence import EOCRecorder
     eocs = [EOCRecorder() for _ in range(case.ambient_dim)]

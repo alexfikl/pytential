@@ -25,13 +25,19 @@ THE SOFTWARE.
 
 import logging
 from functools import partial
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.linalg as la
 import pytest
 
 import meshmode.mesh.generation as mgen
-from arraycontext import flatten, pytest_generate_tests_for_array_contexts, unflatten
+from arraycontext import (
+    ArrayContextFactory,
+    flatten,
+    pytest_generate_tests_for_array_contexts,
+    unflatten,
+)
 from meshmode import _acf  # noqa: F401
 from meshmode.array_context import PytestPyOpenCLArrayContextFactory
 from meshmode.discretization import Discretization
@@ -40,11 +46,13 @@ from meshmode.discretization.poly_element import (
 )
 
 from pytential import bind, sym
+from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
 
+
+if TYPE_CHECKING:
+    from pytential.symbolic.dof_desc import DiscretizationStage, DOFGranularity
 
 logger = logging.getLogger(__name__)
-
-from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
 
 
 pytest_generate_tests = pytest_generate_tests_for_array_contexts([
@@ -114,7 +122,7 @@ def get_torus_with_ref_mean_curvature(actx, h):
     ("torus", [8, 10, 12, 16],
         get_torus_with_ref_mean_curvature),
     ])
-def test_mean_curvature(actx_factory, discr_name, resolutions,
+def test_mean_curvature(actx_factory: ArrayContextFactory, discr_name, resolutions,
         discr_and_ref_mean_curvature_getter, visualize=False):
     actx = actx_factory()
 
@@ -141,7 +149,7 @@ def test_mean_curvature(actx_factory, discr_name, resolutions,
 
 # {{{ test_tangential_onb
 
-def test_tangential_onb(actx_factory):
+def test_tangential_onb(actx_factory: ArrayContextFactory):
     actx = actx_factory()
 
     from meshmode.mesh.generation import generate_torus
@@ -233,7 +241,11 @@ def test_layer_potential_construction(lpot_class, ambient_dim=2):
     ("stage2_center", sym.QBX_SOURCE_STAGE2, sym.GRANULARITY_CENTER),
     ("quad", sym.QBX_SOURCE_QUAD_STAGE2, sym.GRANULARITY_NODE)
     ])
-def test_interpolation(actx_factory, name, source_discr_stage, target_granularity):
+def test_interpolation(
+            actx_factory: ArrayContextFactory,
+            name: str,
+            source_discr_stage: DiscretizationStage,
+            target_granularity: DOFGranularity):
     actx = actx_factory()
 
     nelements = 32
@@ -244,6 +256,10 @@ def test_interpolation(actx_factory, name, source_discr_stage, target_granularit
     from_dd = sym.DOFDescriptor(
             geometry=where.geometry,
             discr_stage=source_discr_stage,
+            granularity=sym.GRANULARITY_NODE)
+    intermediate_dd = sym.DOFDescriptor(
+            geometry=where.geometry,
+            discr_stage=sym.QBX_SOURCE_QUAD_STAGE2,
             granularity=sym.GRANULARITY_NODE)
     to_dd = sym.DOFDescriptor(
             geometry=where.geometry,
@@ -266,7 +282,11 @@ def test_interpolation(actx_factory, name, source_discr_stage, target_granularit
     places = GeometryCollection(qbx, auto_where=where)
 
     sigma_sym = sym.var("sigma")
-    op_sym = sym.sin(sym.interpolate(sigma_sym, from_dd, to_dd))
+    if target_granularity == sym.GRANULARITY_CENTER:
+        op_sym = sym.cse(sym.interpolate(sigma_sym, from_dd, intermediate_dd))
+        op_sym = sym.sin(sym.interleave(op_sym, op_sym, intermediate_dd))
+    else:
+        op_sym = sym.sin(sym.interpolate(sigma_sym, from_dd, to_dd))
     bound_op = bind(places, op_sym, auto_where=where)
 
     def discr_and_nodes(stage):
@@ -299,7 +319,7 @@ def test_interpolation(actx_factory, name, source_discr_stage, target_granularit
 
 # {{{ test node reductions
 
-def test_node_reduction(actx_factory):
+def test_node_reduction(actx_factory: ArrayContextFactory):
     actx = actx_factory()
 
     # {{{ build discretization
@@ -537,11 +557,17 @@ def test_mapper_dof_descriptor_replacer(op_name, k):
     from pytential.symbolic.mappers import ToTargetTagger
     source_dd = sym.as_dofdesc(sym.DEFAULT_SOURCE)
     target_dd = sym.as_dofdesc(sym.DEFAULT_TARGET)
-    tagged_expr = ToTargetTagger(source_dd, target_dd)(expr)
+    tagged_expr = ToTargetTagger(
+                        default_source=source_dd,
+                        default_target=target_dd
+                    )(expr)
 
     source_new_dd = sym.as_dofdesc("source")
     target_new_dd = sym.as_dofdesc("target")
-    replaced_expr = DOFDescriptorReplacer(source_new_dd, target_new_dd)(tagged_expr)
+    replaced_expr = DOFDescriptorReplacer(
+                        default_source=source_new_dd,
+                        default_target=target_new_dd
+                    )(tagged_expr)
 
     from testlib import DOFDescriptorCollector
     collector = DOFDescriptorCollector()

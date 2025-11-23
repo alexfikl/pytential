@@ -44,6 +44,8 @@ from pytential.qbx.utils import TreeCodeContainerMixin
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from boxtree.traversal import FromSepSmallerCrit
+
     from pytential.collection import GeometryCollection
     from pytential.qbx import QBXLayerPotentialSource
     from pytential.symbolic.dof_desc import DOFDescriptor
@@ -122,13 +124,17 @@ class target_state(Enum):  # noqa
 
 class QBXFMMGeometryDataCodeContainer(TreeCodeContainerMixin):
     def __init__(self,
-            actx: PyOpenCLArrayContext, ambient_dim: int, debug: bool,
-            _well_sep_is_n_away: int, _from_sep_smaller_crit: str) -> None:
+                actx: PyOpenCLArrayContext,
+                ambient_dim: int,
+                debug: bool,
+                _well_sep_is_n_away: int,
+                _from_sep_smaller_crit: FromSepSmallerCrit
+            ) -> None:
         self._setup_actx = actx
         self.ambient_dim = ambient_dim
         self.debug = debug
         self._well_sep_is_n_away = _well_sep_is_n_away
-        self._from_sep_smaller_crit = _from_sep_smaller_crit
+        self._from_sep_smaller_crit: FromSepSmallerCrit = _from_sep_smaller_crit
 
         from pytential.qbx.utils import tree_code_container
         self.tree_code_container = tree_code_container(actx)
@@ -472,11 +478,13 @@ class QBXFMMGeometryData(FMMLibRotationDataInterface):
         from pytential import bind, sym
 
         actx = self._setup_actx
+        dd = self.source_dd.to_stage1()
         radii = bind(self.places,
-                    sym.expansion_radii(
-                        self.ambient_dim,
-                        granularity=sym.GRANULARITY_CENTER,
-                        dofdesc=self.source_dd.to_stage1()))(actx)
+                    sym.interleave(
+                            sym.expansion_radii(self.ambient_dim, dofdesc=dd),
+                            sym.expansion_radii(self.ambient_dim, dofdesc=dd),
+                            dd,
+                        ))(actx)
 
         return actx.freeze(flatten(radii, actx))
 

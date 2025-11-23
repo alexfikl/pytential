@@ -24,25 +24,36 @@ THE SOFTWARE.
 """
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+from typing_extensions import override
 
-from arraycontext import PyOpenCLArrayContext, flatten, unflatten
+from arraycontext import (
+    Array,
+    ArrayOrContainerOrScalar,
+    PyOpenCLArrayContext,
+    flatten,
+    unflatten,
+)
+from boxtree.timing import TimingResult
 from meshmode.dof_array import DOFArray
 from pytools import T, memoize_in
 from sumpy.fmm import UnableToCollectTimingData
 
 
 if TYPE_CHECKING:
-    from collections.abc import Hashable
+    from collections.abc import Callable, Hashable, Iterable
 
+    import pyopencl as cl
     from meshmode.discretization import Discretization
     from sumpy.kernel import Kernel
-    from sumpy.p2p import P2P, P2PBase
+    from sumpy.p2p import P2P
 
-    from pytential import sym
     from pytential.collection import GeometryCollection
+    from pytential.symbolic.compiler import ComputePotential
+    from pytential.symbolic.execution import BoundExpression, EvaluationMapperBase
+    from pytential.symbolic.primitives import IntG, KernelArgumentMapping, Operand
 
 __doc__ = """
 .. autoclass:: PotentialSource
@@ -76,34 +87,48 @@ class PotentialSource(ABC):
 
     @property
     @abstractmethod
-    def real_dtype(self):
+    def real_dtype(self) -> np.dtype[np.floating]:
         """:class:`~numpy.dtype` of real data living on the source geometry."""
 
     @property
     @abstractmethod
-    def complex_dtype(self):
+    def complex_dtype(self) -> np.dtype[np.complexfloating]:
         """:class:`~numpy.dtype` of complex data living on the source geometry."""
 
     @abstractmethod
-    def op_group_features(self, expr: sym.IntG) -> tuple[Hashable, ...]:
+    def op_group_features(self, expr: IntG) -> tuple[Hashable, ...]:
         """
         :arg expr: a subclass of :class:`~pytential.symbolic.primitives.IntG`.
         :returns: a characteristic tuple by which operators that can be
             executed together can be grouped.
         """
 
-    @abstractmethod
     def get_p2p(self,
                 actx: PyOpenCLArrayContext,
                 target_kernels: tuple[Kernel, ...],
-                source_kernels: tuple[Kernel, ...] | None = None) -> P2PBase:
+                source_kernels: tuple[Kernel, ...] | None = None) -> P2P:
         """
-        :returns: a subclass of :class:`~sumpy.p2p.P2PBase` for evaluating
+        :returns: a subclass of :class:`~sumpy.p2p.P2P` for evaluating
             the *target_kernels* and the *source_kernels* on the source geometry.
         """
 
+        @memoize_in(actx, (PotentialSource, "p2p"))
+        def p2p(target_kernels: tuple[Kernel, ...],
+                source_kernels: tuple[Kernel, ...] | None) -> P2P:
+            if any(knl.is_complex_valued for knl in target_kernels):
+                value_dtype = self.complex_dtype
+            else:
+                value_dtype = self.real_dtype
+
+            from sumpy.p2p import P2P
+            return P2P(actx.context,
+                    target_kernels, exclude_self=False, value_dtypes=value_dtype,
+                    source_kernels=source_kernels)
+
+        return p2p(target_kernels, source_kernels)
+
     def preprocess_optemplate(self,
-                name: str,
+                name: Hashable,
                 discretizations: GeometryCollection,
                 expr: T) -> T:
         """
@@ -114,89 +139,89 @@ class PotentialSource(ABC):
         return expr
 
 
-class _SumpyP2PMixin:
-
-    def get_p2p(self,
-                actx: PyOpenCLArrayContext,
-                target_kernels: tuple[Kernel, ...],
-                source_kernels: tuple[Kernel, ...] | None = None) -> P2P:
-        @memoize_in(actx, (_SumpyP2PMixin, "p2p"))
-        def p2p(target_kernels: tuple[Kernel, ...],
-                source_kernels: tuple[Kernel, ...] | None) -> P2P:
-            if any(knl.is_complex_valued for knl in target_kernels):
-                value_dtype = self.complex_dtype    # type: ignore[attr-defined]
-            else:
-                value_dtype = self.real_dtype       # type: ignore[attr-defined]
-
-            from sumpy.p2p import P2P
-            return P2P(actx.context,
-                    target_kernels, exclude_self=False, value_dtypes=value_dtype,
-                    source_kernels=source_kernels)
-
-        return p2p(target_kernels, source_kernels)
-
-
 # {{{ point potential source
 
-def evaluate_kernel_arguments(actx, evaluate, kernel_arguments, flat=True):
-    kernel_args = {}
+def evaluate_kernel_arguments(
+        actx: PyOpenCLArrayContext,
+        evaluate: EvaluationMapperBase,
+        kernel_arguments: KernelArgumentMapping,
+        flat: bool = True,
+    ) -> dict[str, ArrayOrContainerOrScalar]:
+    from arraycontext.typing import is_scalar_like
+
+    kernel_args: dict[str, ArrayOrContainerOrScalar] = {}
     for arg_name, arg_expr in kernel_arguments.items():
         value = evaluate(arg_expr)
 
-        if flat:
+        if flat and not is_scalar_like(value):
             value = flatten(value, actx, leaf_class=DOFArray)
+
         kernel_args[arg_name] = value
 
     return kernel_args
 
 
-class PointPotentialSource(_SumpyP2PMixin, PotentialSource):
+class PointPotentialSource(PotentialSource):
     """
-    .. attribute:: nodes
-
-        An :class:`pyopencl.array.Array` of shape ``[ambient_dim, ndofs]``.
-
     .. attribute:: ndofs
 
+    .. automethod:: nodes
     .. automethod:: cost_model_compute_potential_insn
     .. automethod:: exec_compute_potential_insn
     """
 
-    def __init__(self, nodes):
-        self._nodes = nodes
+    def __init__(self, nodes: Array) -> None:
+        self._nodes: Array = nodes
 
     @property
-    def points(self):
+    def points(self) -> Array:
         from warnings import warn
-        warn("'points' has been renamed to nodes().",
+        warn("'points' has been renamed to nodes(). It will be removed in 2026.",
              DeprecationWarning, stacklevel=2)
 
         return self._nodes
 
-    def nodes(self):
+    def nodes(self) -> Array:
+        """
+        :returns: an :class:`~arraycontext.Array` of shape ``[ambient_dim, ndofs]``.
+        """
         return self._nodes
 
     @property
-    def real_dtype(self):
+    @override
+    def real_dtype(self) -> np.dtype[np.floating]:
         return self._nodes.dtype
 
     @property
-    def ndofs(self):
+    @override
+    def ndofs(self) -> int:
         for coord_ary in self._nodes:
-            return coord_ary.shape[0]
+            axis = coord_ary.shape[0]
+            assert isinstance(axis, int)
+
+            return axis
+
+        raise AttributeError(
+            f"type object '{type(self).__name__}' has no attribute 'ndofs'")
 
     @property
-    def complex_dtype(self):
+    @override
+    def complex_dtype(self) -> np.dtype[np.complexfloating]:
         return {
-                np.float32: np.complex64,
-                np.float64: np.complex128
+                np.float32: np.dtype(np.complex64),
+                np.float64: np.dtype(np.complex128)
                 }[self.real_dtype.type]
 
     @property
-    def ambient_dim(self):
-        return self._nodes.shape[0]
+    @override
+    def ambient_dim(self) -> int:
+        dim = self._nodes.shape[0]
+        assert isinstance(dim, int)
 
-    def op_group_features(self, expr):
+        return dim
+
+    @override
+    def op_group_features(self, expr: IntG) -> tuple[Hashable, ...]:
         from pytential.utils import sort_arrays_together
         # since IntGs with the same source kernels and densities calculations
         # for P2E and E2E are the same and only differs in E2P depending on the
@@ -211,12 +236,25 @@ class PointPotentialSource(_SumpyP2PMixin, PotentialSource):
 
         return result
 
-    def cost_model_compute_potential_insn(self, actx, insn, bound_expr,
-                                          evaluate, costs):
+    def cost_model_compute_potential_insn(
+            self,
+            actx: PyOpenCLArrayContext,
+            insn: ComputePotential,
+            bound_expr: BoundExpression[Any],
+            evaluate: EvaluationMapperBase,
+            calibration_params: dict[str, float],
+            per_box: bool,
+        ) -> tuple[list[tuple[str, DOFArray]], TimingResult]:
         raise NotImplementedError
 
-    def exec_compute_potential_insn(self, actx, insn, bound_expr, evaluate,
-            return_timing_data):
+    def exec_compute_potential_insn(
+            self,
+            actx: PyOpenCLArrayContext,
+            insn: ComputePotential,
+            bound_expr: BoundExpression[Any],
+            evaluate: EvaluationMapperBase,
+            return_timing_data: bool,
+        ) -> tuple[list[tuple[str, ArrayOrContainerOrScalar]], TimingResult]:
         if return_timing_data:
             from warnings import warn
             warn(
@@ -228,12 +266,14 @@ class PointPotentialSource(_SumpyP2PMixin, PotentialSource):
 
         kernel_args = evaluate_kernel_arguments(
                 actx, evaluate, insn.kernel_arguments, flat=False)
-        strengths = [evaluate(density) for density in insn.densities]
+        strengths = [cast("Array", evaluate(density)) for density in insn.densities]
+
+        from meshmode.discretization import Discretization
 
         # FIXME: Do this all at once
-        results = []
+        results: list[tuple[str, ArrayOrContainerOrScalar]] = []
         for o in insn.outputs:
-            target_discr = bound_expr.places.get_discretization(
+            target_or_discr = bound_expr.places.get_target_or_discretization(
                     o.target_name.geometry, o.target_name.discr_stage)
 
             # no on-disk kernel caching
@@ -242,19 +282,18 @@ class PointPotentialSource(_SumpyP2PMixin, PotentialSource):
                 target_kernels=insn.target_kernels)
 
             _, output_for_each_kernel = p2p(actx.queue,
-                    targets=flatten(target_discr.nodes(), actx, leaf_class=DOFArray),
+                    targets=flatten(target_or_discr.nodes(), actx, leaf_class=DOFArray),
                     sources=self._nodes,
                     strength=strengths, **kernel_args)
 
-            from meshmode.discretization import Discretization
             result = output_for_each_kernel[o.target_kernel_index]
-            if isinstance(target_discr, Discretization):
-                template_ary = actx.thaw(target_discr.nodes()[0])
+            if isinstance(target_or_discr, Discretization):
+                template_ary = actx.thaw(target_or_discr.nodes()[0])
                 result = unflatten(template_ary, result, actx, strict=False)
 
             results.append((o.name, result))
 
-        timing_data = {}
+        timing_data: TimingResult = TimingResult()
         return results, timing_data
 
 # }}}
@@ -262,7 +301,8 @@ class PointPotentialSource(_SumpyP2PMixin, PotentialSource):
 
 # {{{ layer potential source
 
-def _entry_dtype(actx, ary):
+def _entry_dtype(actx: PyOpenCLArrayContext,
+                 ary: ArrayOrContainerOrScalar) -> np.dtype[Any]:
     from meshmode.dof_array import DOFArray
 
     if isinstance(ary, DOFArray):
@@ -274,14 +314,14 @@ def _entry_dtype(actx, ary):
             return single_valued(_entry_dtype(actx, entry) for entry in ary.flat)
         else:
             return ary.dtype
-    elif isinstance(ary, actx.array_types):
+    elif actx.is_array_type(ary):
         # for "unregularized" layer potential sources
         return ary.dtype
     else:
         raise TypeError(f"unexpected type: '{type(ary).__name__}'")
 
 
-class LayerPotentialSourceBase(_SumpyP2PMixin, PotentialSource, ABC):
+class LayerPotentialSourceBase(PotentialSource, ABC):
     """A discretization of a layer potential using element-based geometry, with
     support for refinement and upsampling.
 
@@ -294,36 +334,42 @@ class LayerPotentialSourceBase(_SumpyP2PMixin, PotentialSource, ABC):
         self.density_discr: Discretization = density_discr
 
     @property
-    def _setup_actx(self):
-        return self.density_discr._setup_actx
+    def _setup_actx(self) -> PyOpenCLArrayContext:
+        actx = self.density_discr._setup_actx
+        assert isinstance(actx, PyOpenCLArrayContext)
+        return actx
 
     @property
-    def cl_context(self):
-        return cast("PyOpenCLArrayContext", self._setup_actx).context
+    def cl_context(self) -> cl.Context:
+        return self._setup_actx.context
 
     @property
-    def ambient_dim(self):
+    @override
+    def ambient_dim(self) -> int:
         return self.density_discr.ambient_dim
 
     @property
-    def dim(self):
+    def dim(self) -> int:
         return self.density_discr.dim
 
     @property
-    def ndofs(self):
+    @override
+    def ndofs(self) -> int:
         return self.density_discr.ndofs
 
     @property
-    def real_dtype(self):
+    @override
+    def real_dtype(self) -> np.dtype[np.floating]:
         return self.density_discr.real_dtype
 
     @property
-    def complex_dtype(self):
+    @override
+    def complex_dtype(self) -> np.dtype[np.complexfloating]:
         return self.density_discr.complex_dtype
 
     # {{{ fmm setup helpers
 
-    def get_fmm_kernel(self, kernels):
+    def get_fmm_kernel(self, kernels: Iterable[Kernel]) -> Kernel | None:
         fmm_kernel = None
 
         from sumpy.kernel import TargetTransformationRemover
@@ -337,31 +383,44 @@ class LayerPotentialSourceBase(_SumpyP2PMixin, PotentialSource, ABC):
 
         return fmm_kernel
 
-    def get_fmm_output_and_expansion_dtype(self, kernels, strengths):
-        if any(knl.is_complex_valued for knl in kernels) or \
-                _entry_dtype(self._setup_actx, strengths).kind == "c":
+    def get_fmm_output_and_expansion_dtype(
+            self,
+            kernels: Iterable[Kernel],
+            strengths: ArrayOrContainerOrScalar) -> np.dtype[Any]:
+        if (
+                any(knl.is_complex_valued for knl in kernels)
+                or _entry_dtype(self._setup_actx, strengths).kind == "c"):
             return self.complex_dtype
         else:
             return self.real_dtype
 
     def get_fmm_expansion_wrangler_extra_kwargs(
-            self, actx, target_kernels, tree_user_source_ids, arguments, evaluator):
+            self,
+            actx: PyOpenCLArrayContext,
+            target_kernels: tuple[Kernel, ...],
+            tree_user_source_ids: Array,
+            arguments: KernelArgumentMapping,
+            evaluator: Callable[[Operand], ArrayOrContainerOrScalar],
+        ) -> tuple[dict[str, ArrayOrContainerOrScalar],
+                   dict[str, ArrayOrContainerOrScalar]]:
         # This contains things like the Helmholtz parameter k or
         # the normal directions for double layers.
 
-        def flatten_and_reorder_sources(source_array):
+        def flatten_and_reorder_sources(
+                source_array: ArrayOrContainerOrScalar,
+            ) -> ArrayOrContainerOrScalar:
             if isinstance(source_array, DOFArray):
                 source_array = flatten(source_array, actx)
 
-            if isinstance(source_array, actx.array_types):
+            if actx.is_array_type(source_array):
                 return actx.freeze(
                         actx.thaw(source_array)[tree_user_source_ids]
                         )
             else:
                 return source_array
 
-        kernel_extra_kwargs = {}
-        source_extra_kwargs = {}
+        kernel_extra_kwargs: dict[str, ArrayOrContainerOrScalar] = {}
+        source_extra_kwargs: dict[str, ArrayOrContainerOrScalar] = {}
 
         from arraycontext import rec_map_array_container
         from sumpy.tools import gather_arguments, gather_source_arguments

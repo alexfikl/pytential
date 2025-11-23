@@ -39,7 +39,6 @@ dependencies = [
     "pytools>=2024.1",
     "scipy>=1.2",
     "sumpy>=2022.1",
-    "useful-types",
 ]
 
 [project.optional-dependencies]
@@ -52,7 +51,8 @@ fmmlib = [
     "pyfmmlib>=2023.1",
 ]
 test = [
-    "pylint",
+    "basedpyright",
+    "optype",
     "pytest",
     "ruff",
 ]
@@ -164,10 +164,12 @@ pythonVersion = "3.10"
 pythonPlatform = "All"
 
 ignore = [
+    "build",
+    "doc/_build",
+    "doc/conf.py",
+    "experiments",
     "pytential/symbolic/old_diffop_primitives.py",
     "pytential/symbolic/pde/maxwell/generalized_debye.py",
-    "build",
-    "doc/conf.py",
 ]
 
 [[tool.basedpyright.executionEnvironments]]

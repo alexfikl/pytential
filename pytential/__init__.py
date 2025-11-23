@@ -23,13 +23,22 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from typing import TYPE_CHECKING, Literal, cast
+
 import numpy as np
 
-from pytools import memoize_on_first_arg
+from pytools import memoize_on_first_arg, obj_array
 
 import pytential.symbolic.primitives as sym
 from pytential.collection import GeometryCollection
 from pytential.symbolic.execution import bind
+
+
+if TYPE_CHECKING:
+    from arraycontext import Array
+    from meshmode.discretization import Discretization
+    from meshmode.dof_array import DOFArray
+    from pytools.obj_array import ObjectArray1D
 
 
 def _set_up_logging_from_environment():
@@ -62,19 +71,19 @@ _set_up_errors()
 
 
 @memoize_on_first_arg
-def _integral_op(discr):
+def _integral_op(discr: Discretization):
     from pytential import bind, sym
     return bind(discr,
             sym.integral(
                 discr.ambient_dim, discr.dim, sym.var("integrand")))
 
 
-def integral(discr, x):
+def integral(discr: Discretization, x: DOFArray):
     return _integral_op(discr)(integrand=x)
 
 
 @memoize_on_first_arg
-def _norm_2_op(discr, num_components):
+def _norm_2_op(discr: Discretization, num_components: int | None):
     from pytential import bind, sym
     if num_components is not None:
         from pymbolic.primitives import make_sym_vector
@@ -88,7 +97,7 @@ def _norm_2_op(discr, num_components):
 
 
 @memoize_on_first_arg
-def _norm_inf_op(discr, num_components):
+def _norm_inf_op(discr: Discretization, num_components: int | None):
     from pytential import bind, sym
     if num_components is not None:
         from pymbolic.primitives import make_sym_vector
@@ -100,13 +109,16 @@ def _norm_inf_op(discr, num_components):
     return bind(discr, sym.node_max(max_arg))
 
 
-def norm(discr, x, p=2):
+def norm(
+            discr: Discretization,
+            x: DOFArray | ObjectArray1D[DOFArray],
+            p: float | Literal["inf"] = 2):
     from pymbolic.geometric_algebra import MultiVector
     if isinstance(x, MultiVector):
-        x = x.as_vector(object)
+        x = obj_array.from_numpy(x.as_vector(object))
 
     num_components = None
-    if isinstance(x, np.ndarray) and x.dtype.char == "O":
+    if isinstance(x, obj_array.ObjectArray):
         num_components, = x.shape
 
     if p == 2:
@@ -115,9 +127,13 @@ def norm(discr, x, p=2):
 
     elif p == np.inf or p == "inf":
         norm_op = _norm_inf_op(discr, num_components)
-        norm_res = norm_op(arg=x)
-        if isinstance(norm_res, np.ndarray):
-            return max(norm_res)
+
+        # FIXME: norm_op (correctly) becomes BoundExpression[Operand], but
+        # then none of the overloads fit, hence the type-ignore.
+        norm_res = norm_op(arg=x)  # pyright: ignore[reportCallIssue]
+        if isinstance(norm_res, obj_array.ObjectArray):
+            # FIXME: Pyright may have a point: It's not clear how/if this works
+            return max(cast("ObjectArray1D[Array]", norm_res))  # pyright: ignore[reportArgumentType]
         else:
             return norm_res
 

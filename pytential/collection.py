@@ -30,8 +30,10 @@ from collections.abc import Hashable, Mapping
 from typing import Any
 
 from constantdict import constantdict
+from typing_extensions import override
 
 from meshmode.discretization import Discretization
+from meshmode.discretization.connection.direct import DiscretizationConnection
 
 import pytential.symbolic.primitives as sym
 from pytential.qbx import QBXLayerPotentialSource
@@ -40,7 +42,12 @@ from pytential.source import (
     PointPotentialSource,
     PotentialSource,
 )
-from pytential.symbolic.dof_desc import DiscretizationStage, DOFDescriptorLike
+from pytential.symbolic.dof_desc import (
+    DiscretizationStage,
+    DOFDescriptor,
+    DOFDescriptorLike,
+    GeometryId,
+)
 from pytential.target import PointsTarget, TargetBase
 
 
@@ -60,6 +67,10 @@ __doc__ = """
 
 GeometryLike = TargetBase | PotentialSource | Discretization
 AutoWhereLike = DOFDescriptorLike | tuple[DOFDescriptorLike, DOFDescriptorLike]
+
+
+class NotADiscretizationError(TypeError):
+    pass
 
 
 def _is_valid_identifier(name: str) -> bool:
@@ -113,6 +124,7 @@ class GeometryCollection:
         target geometry.
 
     .. automethod:: get_geometry
+    .. automethod:: get_target_or_discretization
     .. automethod:: get_discretization
     .. automethod:: get_connection
 
@@ -121,11 +133,17 @@ class GeometryCollection:
 
     """
 
+    ambient_dim: int
+    places: Mapping[GeometryId, GeometryLike]
+    auto_where: tuple[DOFDescriptor, DOFDescriptor]
+
+    _caches: dict[Hashable, Any]
+
     def __init__(self,
             places: (
                 GeometryLike
                 | tuple[GeometryLike, GeometryLike]
-                | Mapping[Hashable, GeometryLike]
+                | Mapping[GeometryId, GeometryLike]
                 ),
             auto_where: AutoWhereLike | None = None) -> None:
         r"""
@@ -153,7 +171,7 @@ class GeometryCollection:
         from pytential.symbolic.execution import _prepare_auto_where
         auto_source, auto_target = _prepare_auto_where(auto_where)
 
-        places_dict: Mapping[Hashable, GeometryLike]
+        places_dict: Mapping[GeometryId, GeometryLike]
         if isinstance(places, QBXLayerPotentialSource):
             places_dict = {auto_source.geometry: places}
             auto_target = auto_source
@@ -215,7 +233,7 @@ class GeometryCollection:
         self.places = constantdict(places_dict)
         self.auto_where = (auto_source, auto_target)
 
-        self._caches: dict[str, Any] = {}
+        self._caches = {}
 
     @property
     def auto_source(self) -> sym.DOFDescriptor:
@@ -227,10 +245,12 @@ class GeometryCollection:
 
     # {{{ cache handling
 
-    def _get_cache(self, name):
+    def _get_cache(self, name: Hashable) -> dict[Hashable, Any]:
         return self._caches.setdefault(name, {})
 
-    def _get_discr_from_cache(self, geometry, discr_stage):
+    def _get_discr_from_cache(self,
+                              geometry: GeometryId,
+                              discr_stage: DiscretizationStage) -> Discretization:
         cache = self._get_cache(_GeometryCollectionDiscretizationCacheKey)
         key = (geometry, discr_stage)
 
@@ -239,9 +259,15 @@ class GeometryCollection:
                     f"cached discretization does not exist on '{geometry}' "
                     f"for stage '{discr_stage}'")
 
-        return cache[key]
+        result = cache[key]
+        assert isinstance(result, Discretization)
 
-    def _add_discr_to_cache(self, discr, geometry, discr_stage):
+        return result
+
+    def _add_discr_to_cache(self,
+                            discr: Discretization,
+                            geometry: GeometryId,
+                            discr_stage: DiscretizationStage) -> None:
         cache = self._get_cache(_GeometryCollectionDiscretizationCacheKey)
         key = (geometry, discr_stage)
 
@@ -251,7 +277,11 @@ class GeometryCollection:
 
         cache[key] = discr
 
-    def _get_conn_from_cache(self, geometry, from_stage, to_stage):
+    def _get_conn_from_cache(self,
+                             geometry: GeometryId,
+                             from_stage: DiscretizationStage | None,
+                             to_stage: DiscretizationStage | None
+                             ) -> DiscretizationConnection:
         cache = self._get_cache(_GeometryCollectionConnectionCacheKey)
         key = (geometry, from_stage, to_stage)
 
@@ -259,9 +289,16 @@ class GeometryCollection:
             raise KeyError("cached connection does not exist on "
                     f"'{geometry}' from stage '{from_stage}' to '{to_stage}'")
 
-        return cache[key]
+        result = cache[key]
+        assert isinstance(result, DiscretizationConnection)
 
-    def _add_conn_to_cache(self, conn, geometry, from_stage, to_stage):
+        return result
+
+    def _add_conn_to_cache(self,
+                           conn: DiscretizationConnection,
+                           geometry: GeometryId,
+                           from_stage: DiscretizationStage,
+                           to_stage: DiscretizationStage) -> None:
         cache = self._get_cache(_GeometryCollectionConnectionCacheKey)
         key = (geometry, from_stage, to_stage)
 
@@ -271,8 +308,11 @@ class GeometryCollection:
 
         cache[key] = conn
 
-    def _get_qbx_discretization(self, geometry, discr_stage):
+    def _get_qbx_discretization(self,
+                                geometry: GeometryId,
+                                discr_stage: DiscretizationStage) -> Discretization:
         lpot_source = self.get_geometry(geometry)
+        assert isinstance(lpot_source, LayerPotentialSourceBase)
 
         try:
             discr = self._get_discr_from_cache(geometry, discr_stage)
@@ -291,7 +331,9 @@ class GeometryCollection:
 
     # }}}
 
-    def get_connection(self, from_dd: DOFDescriptorLike, to_dd: DOFDescriptorLike):
+    def get_connection(self,
+                       from_dd: DOFDescriptorLike,
+                       to_dd: DOFDescriptorLike) -> DiscretizationConnection:
         """Construct a connection from *from_dd* to *to_dd* geometries.
 
         :returns: an object compatible with the
@@ -302,39 +344,69 @@ class GeometryCollection:
         from pytential.symbolic.dof_connection import connection_from_dds
         return connection_from_dds(self, from_dd, to_dd)
 
-    def get_discretization(
-            self, geometry: Hashable,
+    def _get_discretization_or_geometry(
+            self, geometry: GeometryId,
             discr_stage: DiscretizationStage | None = None
             ) -> GeometryLike:
-        """Get the geometry or discretization in the collection.
-
+        """
         If a specific QBX stage discretization is requested, refinement is
         performed on demand and cached for subsequent calls.
-
-        :arg geometry: the identifier of the geometry in the collection.
-        :arg discr_stage: if the geometry is a
-            :class:`~pytential.source.LayerPotentialSourceBase`, this denotes
-            the QBX stage of the returned discretization. Can be one of
-            :class:`~pytential.symbolic.dof_desc.QBX_SOURCE_STAGE1` (default),
-            :class:`~pytential.symbolic.dof_desc.QBX_SOURCE_STAGE2` or
-            :class:`~pytential.symbolic.dof_desc.QBX_SOURCE_QUAD_STAGE2`.
-
-        :returns: a geometry object in the collection or a
-            :class:`~meshmode.discretization.Discretization` corresponding to
-            *discr_stage*.
         """
         if discr_stage is None:
             discr_stage = sym.QBX_SOURCE_STAGE1
-        discr = self.get_geometry(geometry)
+        result = self.get_geometry(geometry)
 
-        if isinstance(discr, QBXLayerPotentialSource):
+        if isinstance(result, QBXLayerPotentialSource):
             return self._get_qbx_discretization(geometry, discr_stage)
-        elif isinstance(discr, LayerPotentialSourceBase):
-            return discr.density_discr
+        elif isinstance(result, LayerPotentialSourceBase):
+            return result.density_discr
         else:
-            return discr
+            return result
 
-    def get_geometry(self, geometry: Hashable) -> GeometryLike:
+    def get_source_or_discretization(
+            self, geometry: GeometryId,
+            discr_stage: DiscretizationStage | None = None
+            ) -> Discretization | PointPotentialSource:
+        """
+        If a specific QBX stage discretization is requested, refinement is
+        performed on demand and cached for subsequent calls.
+        """
+        result = self._get_discretization_or_geometry(geometry, discr_stage)
+
+        if not isinstance(result, (Discretization, PointPotentialSource)):
+            raise TypeError(f"'{geometry}' denotes neither target "
+                            "nor discretization")
+        return result
+
+    def get_target_or_discretization(
+            self, geometry: GeometryId,
+            discr_stage: DiscretizationStage | None = None
+            ) -> Discretization | TargetBase | PointPotentialSource:
+        """
+        If a specific QBX stage discretization is requested, refinement is
+        performed on demand and cached for subsequent calls.
+        """
+        result = self._get_discretization_or_geometry(geometry, discr_stage)
+
+        if not isinstance(result, (Discretization, TargetBase, PointPotentialSource)):
+            raise TypeError(f"'{geometry}' denotes neither target "
+                            "nor discretization")
+        return result
+
+    def get_discretization(
+            self, geometry: GeometryId,
+            discr_stage: DiscretizationStage | None = None
+            ) -> Discretization:
+        """
+        If a specific QBX stage discretization is requested, refinement is
+        performed on demand and cached for subsequent calls.
+        """
+        result = self.get_target_or_discretization(geometry, discr_stage)
+        if not isinstance(result, Discretization):
+            raise NotADiscretizationError(str(geometry))
+        return result
+
+    def get_geometry(self, geometry: GeometryId) -> GeometryLike:
         """
         :arg geometry: the identifier of the geometry in the collection.
         """
@@ -346,7 +418,7 @@ class GeometryCollection:
 
     def copy(
             self,
-            places: Mapping[Hashable, GeometryLike] | None = None,
+            places: Mapping[GeometryId, GeometryLike] | None = None,
             auto_where: AutoWhereLike | None = None,
             ) -> GeometryCollection:
         """Get a shallow copy of the geometry collection."""
@@ -356,7 +428,7 @@ class GeometryCollection:
 
     def merge(
             self,
-            places: GeometryCollection | Mapping[Hashable, GeometryLike],
+            places: GeometryCollection | Mapping[GeometryId, GeometryLike],
             ) -> GeometryCollection:
         """Merges two geometry collections and returns the new collection.
 
@@ -373,10 +445,12 @@ class GeometryCollection:
 
         return self.copy(places=new_places)
 
-    def __repr__(self):
+    @override
+    def __repr__(self) -> str:
         return f"{type(self).__name__}({self.places!r})"
 
-    def __str__(self):
+    @override
+    def __str__(self) -> str:
         return f"{type(self).__name__}({self.places!r})"
 
 
@@ -387,7 +461,7 @@ class GeometryCollection:
 
 def add_geometry_to_collection(
         places: GeometryCollection,
-        geometries: Mapping[Hashable, GeometryLike]) -> GeometryCollection:
+        geometries: Mapping[GeometryId, GeometryLike]) -> GeometryCollection:
     """Adds a mapping of geometries to an existing collection.
 
     This function is similar to :meth:`GeometryCollection.merge`, but it makes
