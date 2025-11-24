@@ -1972,6 +1972,7 @@ class IntG(ExpressionNode):
         object.__setattr__(self, "kernel_arguments", kernel_arguments)
 
         super().__init__()
+        self.__post_init__()
 
     def __post_init__(self) -> None:
         if self.qbx_forced_limit not in {-1, +1, -2, +2, "avg", None}:
