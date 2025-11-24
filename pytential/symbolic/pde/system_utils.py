@@ -25,10 +25,11 @@ THE SOFTWARE.
 
 import logging
 from collections import defaultdict
+from dataclasses import dataclass
 
 import numpy as np
 
-import sumpy.symbolic as sym
+import sumpy.symbolic as prim
 from pymbolic.geometric_algebra.mapper import WalkMapper
 from pymbolic.mapper import CombineMapper
 from pymbolic.mapper.coefficient import CoefficientCollector
@@ -41,21 +42,14 @@ from sumpy.kernel import (
     AxisTargetDerivative,
     DirectionalDerivative,
     DirectionalSourceDerivative,
-    ExpressionKernel,
+    ExpressionKernel as ExpressionKernelBase,
     KernelWrapper,
     TargetPointMultiplier,
 )
-from sumpy.symbolic import SympyToPymbolicMapper, make_sym_vector
 
-import pytential
+from pytential import sym
 from pytential.symbolic.mappers import IdentityMapper
 from pytential.symbolic.pde.reduce_fmms import reduce_number_of_fmms
-from pytential.symbolic.primitives import (
-    IntG,
-    NodeCoordinateComponent,
-    hashable_kernel_arg_value,
-    hashable_kernel_args,
-)
 from pytential.utils import chop, lu_solve_with_expand
 
 
@@ -153,11 +147,10 @@ def convert_target_deriv_to_source(int_g):
 
 def _get_kernel_expression(expr, kernel_arguments):
     from pymbolic.mapper.substitutor import substitute
-    from sumpy.symbolic import PymbolicToSympyMapperWithSymbols
 
     pymbolic_expr = substitute(expr, kernel_arguments)
+    res = prim.PymbolicToSympyMapperWithSymbols()(pymbolic_expr)
 
-    res = PymbolicToSympyMapperWithSymbols()(pymbolic_expr)
     return res
 
 
@@ -175,9 +168,7 @@ def convert_target_multiplier_to_source(int_g):
     """
     import sympy
 
-    import sumpy.symbolic as sym
-    from sumpy.symbolic import SympyToPymbolicMapper
-    conv = SympyToPymbolicMapper()
+    conv = prim.SympyToPymbolicMapper()
 
     knl = int_g.target_kernel
     # we use a symbol for d = (x - y)
@@ -203,7 +194,7 @@ def convert_target_multiplier_to_source(int_g):
     if not found:
         return [int_g]
 
-    sources_pymbolic = [NodeCoordinateComponent(i) for i in range(knl.dim)]
+    sources_pymbolic = sym.nodes(knl.dim).as_vector()
     expr = expr.expand()
     # Now the expr is an Add and looks like
     # u''(d, s)*d[0] + u(d, s)
@@ -228,7 +219,7 @@ def convert_target_multiplier_to_source(int_g):
         density_multiplier = _monom_to_expr(monom[len(ds):], sources_pymbolic) \
                 * conv(coeff)
 
-        new_int_gs = _multiply_int_g(int_g, sym.sympify(expr_multiplier),
+        new_int_gs = _multiply_int_g(int_g, prim.sympify(expr_multiplier),
                 density_multiplier)
         for new_int_g in new_int_gs:
             knl = new_int_g.target_kernel
@@ -240,19 +231,27 @@ def convert_target_multiplier_to_source(int_g):
     return result
 
 
+@dataclass(frozen=True)
+class ExpressionKernel(ExpressionKernelBase):
+    _is_complex_valued: bool
+
+    @property
+    def is_complex_valued(self) -> bool:
+        return self._is_complex_valued
+
+
 def _multiply_int_g(int_g, expr_multiplier, density_multiplier):
     """Multiply the exprssion in IntG with the *expr_multiplier*
     which is a symbolic expression and multiply the densities
     with *density_multiplier* which is a pymbolic expression.
     """
-    from sumpy.symbolic import SympyToPymbolicMapper
     result = []
 
     base_kernel = int_g.target_kernel.get_base_kernel()
-    sym_d = make_sym_vector("d", base_kernel.dim)
+    sym_d = prim.make_sym_vector("d", base_kernel.dim)
     base_kernel_expr = _get_kernel_expression(base_kernel.expression,
             int_g.kernel_arguments)
-    conv = SympyToPymbolicMapper()
+    conv = prim.SympyToPymbolicMapper()
 
     for knl, density in zip(int_g.source_kernels, int_g.densities, strict=True):
         if expr_multiplier == 1:
@@ -260,9 +259,10 @@ def _multiply_int_g(int_g, expr_multiplier, density_multiplier):
         else:
             new_expr = conv(knl.postprocess_at_source(base_kernel_expr, sym_d)
                     * expr_multiplier)
-            new_knl = ExpressionKernel(knl.dim, new_expr,
-                knl.get_base_kernel().global_scaling_const,
-                knl.is_complex_valued)
+            new_knl = ExpressionKernel(
+                dim=knl.dim, expression=new_expr,
+                global_scaling_const=knl.get_base_kernel().global_scaling_const,
+                _is_complex_valued=knl.is_complex_valued)
         result.append(int_g.copy(target_kernel=new_knl,
             densities=(density*density_multiplier,),
             source_kernels=(new_knl,)))
@@ -287,15 +287,15 @@ def _convert_int_g_to_base(int_g, base_kernel):
                                       strict=True):
         deriv_relation = get_deriv_relation_kernel(source_kernel.get_base_kernel(),
             base_kernel, hashable_kernel_arguments=(
-                hashable_kernel_args(int_g.kernel_arguments)))
+                sym.hashable_kernel_args(int_g.kernel_arguments)))
 
         const = deriv_relation[0]
         # NOTE: we set a dofdesc here to force the evaluation of this integral
         # on the source instead of the target when using automatic tagging
         # see :meth:`pytential.symbolic.mappers.LocationTagger._default_dofdesc`
-        dd = pytential.sym.DOFDescriptor(None,
-                discr_stage=pytential.sym.QBX_SOURCE_STAGE1)
-        const *= pytential.sym.integral(dim, dim-1, density, dofdesc=dd)
+        dd = sym.DOFDescriptor(None,
+                discr_stage=sym.QBX_SOURCE_STAGE1)
+        const *= sym.integral(dim, dim-1, density, dofdesc=dd)
 
         if const != 0 and target_kernel != target_kernel.get_base_kernel():
             # There might be some TargetPointMultipliers hanging around.
@@ -328,7 +328,7 @@ def get_deriv_relation(kernels, base_kernel, tol=1e-10, order=None,
     res = []
     for knl in kernels:
         res.append(get_deriv_relation_kernel(knl, base_kernel, tol, order,
-            hashable_kernel_arguments=hashable_kernel_args(kernel_arguments)))
+            hashable_kernel_arguments=sym.hashable_kernel_args(kernel_arguments)))
     return res
 
 
@@ -338,8 +338,8 @@ def get_deriv_relation_kernel(kernel, base_kernel, tol=1e-10, order=None,
     kernel_arguments = dict(hashable_kernel_arguments)
     (L, U, perm), rand, mis = _get_base_kernel_matrix(base_kernel, order=order)
     dim = base_kernel.dim
-    sym_vec = make_sym_vector("d", dim)
-    sympy_conv = SympyToPymbolicMapper()
+    sym_vec = prim.make_sym_vector("d", dim)
+    sympy_conv = prim.SympyToPymbolicMapper()
 
     expr = _get_kernel_expression(kernel.expression, kernel_arguments)
     vec = []
@@ -347,7 +347,7 @@ def get_deriv_relation_kernel(kernel, base_kernel, tol=1e-10, order=None,
         vec.append(evalf(expr.xreplace(
             dict(zip(sym_vec, rand[:, i], strict=True))
             )))
-    vec = sym.Matrix(vec)
+    vec = prim.Matrix(vec)
     result = []
     const = 0
     logger.debug("%s = ", kernel)
@@ -401,8 +401,8 @@ def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
     rand = rand.astype(object)
     for i in range(rand.shape[0]):
         for j in range(rand.shape[1]):
-            rand[i, j] = sym.sympify(rand[i, j])/10**15
-    sym_vec = make_sym_vector("d", dim)
+            rand[i, j] = prim.sympify(rand[i, j])/10**15
+    sym_vec = prim.make_sym_vector("d", dim)
 
     base_expr = _get_kernel_expression(base_kernel.expression, kernel_arguments)
 
@@ -421,7 +421,7 @@ def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
         row.append(1)
         mat.append(row)
 
-    mat = sym.Matrix(mat)
+    mat = prim.Matrix(mat)
     failed = False
     try:
         L, U, perm = mat.LUdecomposition()
@@ -430,7 +430,7 @@ def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
         # and sympy returns U with last row zero
         failed = True
 
-    if not sym.USE_SYMENGINE and all(expr == 0 for expr in U[-1, :]):
+    if not prim.USE_SYMENGINE and all(expr == 0 for expr in U[-1, :]):
         failed = True
 
     if failed:
@@ -449,8 +449,7 @@ def evalf(expr, prec=100):
     """evaluate an expression numerically using ``prec``
     number of bits.
     """
-    from sumpy.symbolic import USE_SYMENGINE
-    if USE_SYMENGINE:
+    if prim.USE_SYMENGINE:
         return expr.n(prec=prec)
     else:
         import sympy
@@ -716,7 +715,7 @@ def get_int_g_source_group_identifier(int_g):
         k: v for k, v in sorted(int_g.kernel_arguments.items())
         if k not in target_arg_names
     }
-    return (int_g.source, hashable_kernel_args(args),
+    return (int_g.source, sym.hashable_kernel_args(args),
             int_g.target_kernel.get_base_kernel())
 
 
@@ -730,7 +729,7 @@ def get_int_g_target_group_identifier(int_g):
         if k in target_arg_names
     }
     return (int_g.target, int_g.qbx_forced_limit, int_g.target_kernel,
-            hashable_kernel_args(args))
+            sym.hashable_kernel_args(args))
 
 
 def get_normal_vector_names(kernel):
@@ -888,7 +887,7 @@ def convert_axis_source_to_directional_source(int_g):
     an IntG with one DirectionalSourceDerivative instance.
     """
     from pytential.symbolic.primitives import _DIR_VEC_NAME
-    if not isinstance(int_g, IntG):
+    if not isinstance(int_g, sym.IntG):
         return int_g
     knls = list(int_g.source_kernels)
     dim = knls[0].dim
@@ -929,8 +928,8 @@ def merge_kernel_arguments(x, y):
     res = x.copy()
     for k, v in y.items():
         if k in res:
-            if hashable_kernel_arg_value(res[k]) \
-                    != hashable_kernel_arg_value(v):
+            if sym.hashable_kernel_arg_value(res[k]) \
+                    != sym.hashable_kernel_arg_value(v):
                 raise ValueError(f"Error merging values for {k}."
                     f"values were {res[k]} and {v}")
         else:
@@ -943,9 +942,9 @@ def simplify_densities(densities):
     to trigger sympy's automatic simplification routines.
     """
     from pymbolic.mapper import UnsupportedExpressionError
-    from sumpy.symbolic import PymbolicToSympyMapper, SympyToPymbolicMapper
-    to_sympy = PymbolicToSympyMapper()
-    to_pymbolic = SympyToPymbolicMapper()
+
+    to_sympy = prim.PymbolicToSympyMapper()
+    to_pymbolic = prim.SympyToPymbolicMapper()
     result = []
     for density in densities:
         try:
@@ -971,9 +970,9 @@ if __name__ == "__main__":
     kernels += [StressletKernel(3, 0, 0, 0), StressletKernel(3, 0, 0, 1),
             StressletKernel(3, 0, 0, 2), StressletKernel(3, 0, 1, 2)]
 
-    sym_d = make_sym_vector("d", base_kernel.dim)
-    sym_r = sym.sqrt(sum(a**2 for a in sym_d))
-    conv = SympyToPymbolicMapper()
+    sym_d = prim.make_sym_vector("d", base_kernel.dim)
+    sym_r = prim.sqrt(sum(a**2 for a in sym_d))
+    conv = prim.SympyToPymbolicMapper()
     expression_knl = ExpressionKernel(3, conv(sym_d[0]*sym_d[1]/sym_r**3), 1, False)
     expression_knl2 = ExpressionKernel(3, conv(1/sym_r + sym_d[0]*sym_d[0]/sym_r**3),
         1, False)
