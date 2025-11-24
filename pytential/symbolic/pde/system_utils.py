@@ -25,7 +25,7 @@ THE SOFTWARE.
 
 import logging
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -140,9 +140,10 @@ def convert_target_deriv_to_source(int_g):
         knl = TargetPointMultiplier(axis, knl)
 
     new_densities = tuple(density*coeff for density in int_g.densities)
-    return int_g.copy(target_kernel=knl,
-                      densities=new_densities,
-                      source_kernels=tuple(source_kernels))
+    return replace(int_g,
+                   target_kernel=knl,
+                   densities=new_densities,
+                   source_kernels=tuple(source_kernels))
 
 
 def _get_kernel_expression(expr, kernel_arguments):
@@ -227,7 +228,7 @@ def convert_target_multiplier_to_source(int_g):
                 axis = ds.index(axis_var)
                 for _ in range(nrepeats):
                     knl = AxisTargetDerivative(axis, knl)
-            result.append(new_int_g.copy(target_kernel=knl))
+            result.append(replace(new_int_g, target_kernel=knl))
     return result
 
 
@@ -263,7 +264,9 @@ def _multiply_int_g(int_g, expr_multiplier, density_multiplier):
                 dim=knl.dim, expression=new_expr,
                 global_scaling_const=knl.get_base_kernel().global_scaling_const,
                 _is_complex_valued=knl.is_complex_valued)
-        result.append(int_g.copy(target_kernel=new_knl,
+        result.append(replace(
+            int_g,
+            target_kernel=new_knl,
             densities=(density*density_multiplier,),
             source_kernels=(new_knl,)))
     return result
@@ -273,7 +276,7 @@ def convert_int_g_to_base(int_g, base_kernel):
     result = 0
     for knl, density in zip(int_g.source_kernels, int_g.densities, strict=True):
         result += _convert_int_g_to_base(
-                int_g.copy(source_kernels=(knl,), densities=(density,)),
+                replace(int_g, source_kernels=(knl,), densities=(density,)),
                 base_kernel)
     return result
 
@@ -318,8 +321,11 @@ def _convert_int_g_to_base(int_g, base_kernel):
                 for _ in range(val):
                     knl = AxisSourceDerivative(d, knl)
                     c *= -1
-            result += int_g.copy(source_kernels=(knl,), target_kernel=target_kernel,
-                    densities=(density * c,), kernel_arguments=new_kernel_args)
+            result += replace(int_g,
+                    target_kernel=target_kernel,
+                    source_kernels=(knl,),
+                    densities=(density * c,),
+                    kernel_arguments=new_kernel_args)
     return result
 
 
@@ -549,8 +555,8 @@ def merge_int_g_exprs(exprs, source_dependent_variables=None):
             int_g = convert_target_deriv_to_source(int_g)
             if not is_expr_target_dependent(coeff):
                 # move the coefficient inside
-                int_g = int_g.copy(densities=[density*coeff for density in
-                    int_g.densities])
+                int_g = replace(int_g,
+                    densities=tuple(density*coeff for density in int_g.densities))
                 coeff = 1
 
             source_group_identifier = get_int_g_source_group_identifier(int_g)
@@ -575,8 +581,7 @@ def merge_int_g_exprs(exprs, source_dependent_variables=None):
             # result_int_g = convert_axis_source_to_directional_source(int_g)
             # simplify the densities as they may become large due to pymbolic
             # not doing automatic simplifications unlike sympy/symengine
-            result_int_g = int_g.copy(
-                    densities=simplify_densities(int_g.densities))
+            result_int_g = replace(int_g, densities=simplify_densities(int_g.densities))
             result[i] += result_int_g * coeff
             add_int_gs_in_expr(result_int_g)
 
@@ -759,7 +764,7 @@ class IntGSubstitutor(IdentityMapper):
                 expr = new_expr
 
         densities = [self.rec(density) for density in expr.densities]
-        return expr.copy(densities=tuple(densities))
+        return replace(expr, densities=tuple(densities))
 
 
 def remove_target_attributes(int_g):
@@ -769,7 +774,7 @@ def remove_target_attributes(int_g):
     normals = get_normal_vector_names(int_g.target_kernel)
     kernel_arguments = {k: v for k, v in int_g.kernel_arguments.items() if
                         k not in normals}
-    return int_g.copy(target=None, qbx_forced_limit=None,
+    return replace(int_g, target=None, qbx_forced_limit=None,
             target_kernel=int_g.target_kernel.get_base_kernel(),
             kernel_arguments=kernel_arguments)
 
@@ -782,7 +787,8 @@ def restore_target_attributes(expr, orig_int_g):
     int_gs = get_int_g_s([expr])
 
     replacements = {
-        int_g: int_g.copy(target=orig_int_g.target,
+        int_g: replace(int_g,
+                target=orig_int_g.target,
                 qbx_forced_limit=orig_int_g.qbx_forced_limit,
                 target_kernel=orig_int_g.target_kernel.replace_base_kernel(
                     int_g.target_kernel),
@@ -799,7 +805,7 @@ def merge_two_int_gs(int_g_1, int_g_2):
     source_kernels = int_g_1.source_kernels + int_g_2.source_kernels
     densities = int_g_1.densities + int_g_2.densities
 
-    return int_g_1.copy(
+    return replace(int_g_1,
         source_kernels=tuple(source_kernels),
         densities=tuple(densities),
         kernel_arguments=kernel_arguments,
@@ -857,7 +863,8 @@ def convert_directional_source_to_axis_source(int_g):
 
     kernel_arguments = filter_kernel_arguments(
         [*source_kernels, int_g.target_kernel], int_g.kernel_arguments)
-    return int_g.copy(source_kernels=tuple(source_kernels),
+    return replace(int_g,
+            source_kernels=tuple(source_kernels),
             densities=tuple(densities), kernel_arguments=kernel_arguments)
 
 
@@ -913,7 +920,7 @@ def convert_axis_source_to_directional_source(int_g):
 
     kernel_arguments[name] = \
             np.array(int_g.densities, dtype=object)
-    res = int_g.copy(
+    res = replace(int_g,
             source_kernels=(
                 DirectionalSourceDerivative(base_knl, dir_vec_name=name),),
             densities=(1,),

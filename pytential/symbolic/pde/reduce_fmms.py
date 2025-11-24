@@ -26,6 +26,7 @@ THE SOFTWARE.
 import functools
 import logging
 from collections import defaultdict
+from dataclasses import replace
 
 import sympy
 
@@ -120,7 +121,7 @@ def reduce_number_of_fmms(int_gs, source_dependent_variables):
         return int_gs
 
     base_kernel = int_gs[0].source_kernels[0].get_base_kernel()
-    base_int_g = int_gs[0].copy(target_kernel=base_kernel,
+    base_int_g = replace(int_gs[0], target_kernel=base_kernel,
             source_kernels=(base_kernel,), densities=(1,))
 
     # Convert polynomials back to IntGs with source derivatives
@@ -143,7 +144,7 @@ def reduce_number_of_fmms(int_gs, source_dependent_variables):
             source_kernels.extend(source_int_gs[i][j].source_kernels)
             densities.extend(new_densities)
 
-        source_int_gs_merged.append(source_int_gs[i][0].copy(
+        source_int_gs_merged.append(replace(source_int_gs[i][0],
             source_kernels=tuple(source_kernels), densities=tuple(densities)))
 
     # Now that we have the IntG expressions depending on the source
@@ -204,7 +205,7 @@ def _check_int_gs_common(int_gs):
 
     kernel_arguments = {}
     base_kernel = int_gs[0].source_kernels[0].get_base_kernel()
-    common_int_g = int_gs[0].copy(target_kernel=base_kernel,
+    common_int_g = replace(int_gs[0], target_kernel=base_kernel,
             source_kernels=(base_kernel,), densities=(1,))
 
     for int_g in int_gs:
@@ -477,7 +478,7 @@ def _convert_source_poly_to_int_g_derivs(poly, orig_int_g, axis_vars):
         source_kernels.append(kernel)
         # (-1) below is because d/dx f(c - x) = - f'(c - x)
         densities.append(to_pymbolic(coeff) * (-1)**sum(monom))
-    return orig_int_g.copy(source_kernels=tuple(source_kernels),
+    return replace(orig_int_g, source_kernels=tuple(source_kernels),
             densities=tuple(simplify_densities(densities)))
 
 
@@ -495,7 +496,7 @@ def _convert_target_poly_to_int_g_derivs(poly, orig_int_g, rhs_int_g):
         for idim, rep in enumerate(monom):
             for _ in range(rep):
                 kernel = AxisTargetDerivative(idim, kernel)
-        result += orig_int_g.copy(target_kernel=kernel,
+        result += replace(orig_int_g, target_kernel=kernel,
                 source_kernels=rhs_int_g.source_kernels,
                 densities=rhs_int_g.densities) * to_pymbolic(coeff)
 

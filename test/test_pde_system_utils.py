@@ -23,6 +23,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
+from dataclasses import replace
+
 import pytest
 
 import pymbolic.primitives as prim
@@ -207,22 +209,22 @@ def test_merge_different_qbx_forced_limit():
     density = prim.make_sym_vector("sigma", 1)[0]
 
     int_g1 = sym.int_g_vec(laplace_knl, density, qbx_forced_limit=1)
-    int_g2 = int_g1.copy(target_kernel=AxisTargetDerivative(0, laplace_knl))
+    int_g2 = replace(int_g1, target_kernel=AxisTargetDerivative(0, laplace_knl))
 
     int_g3, = merge_int_g_exprs([int_g2 + int_g1])
-    int_g4 = int_g1.copy(qbx_forced_limit=2) + int_g2.copy(qbx_forced_limit=-2)
-    int_g5 = int_g1.copy(qbx_forced_limit=-2) + int_g2.copy(qbx_forced_limit=2)
+    int_g4 = replace(int_g1, qbx_forced_limit=2) + replace(int_g2, qbx_forced_limit=-2)
+    int_g5 = replace(int_g1, qbx_forced_limit=-2) + replace(int_g2, qbx_forced_limit=2)
 
     result = merge_int_g_exprs([int_g3, int_g4, int_g5],
             source_dependent_variables=[])
 
     int_g6 = sym.int_g_vec(laplace_knl, -density, qbx_forced_limit=1)
-    int_g7 = int_g6.copy(target_kernel=AxisTargetDerivative(0, laplace_knl))
+    int_g7 = replace(int_g6, target_kernel=AxisTargetDerivative(0, laplace_knl))
     int_g8 = int_g7 * (-1) + int_g6 * (-1)
-    int_g9 = int_g6.copy(qbx_forced_limit=2) * (-1) \
-                + int_g7.copy(qbx_forced_limit=-2) * (-1)
-    int_g10 = int_g6.copy(qbx_forced_limit=-2) * (-1) \
-                + int_g7.copy(qbx_forced_limit=2) * (-1)
+    int_g9 = replace(int_g6, qbx_forced_limit=2) * (-1) \
+                + replace(int_g7, qbx_forced_limit=-2) * (-1)
+    int_g10 = replace(int_g6, qbx_forced_limit=-2) * (-1) \
+                + replace(int_g7, qbx_forced_limit=2) * (-1)
 
     assert result[0] == flatten(int_g8)
     assert result[1] == flatten(int_g9)
@@ -245,9 +247,9 @@ def test_merge_directional_source():
             for d in range(dim)] + [laplace_knl]
     dsource = int_g2.kernel_arguments["dsource_vec"]
     densities = [dsource[d]*cse(density) for d in range(dim)] + [density]
-    int_g3 = int_g2.copy(source_kernels=tuple(source_kernels),
-                         densities=tuple(densities),
-                         kernel_arguments={})
+    int_g3 = replace(int_g2, source_kernels=tuple(source_kernels),
+                             densities=tuple(densities),
+                             kernel_arguments={})
 
     result = merge_int_g_exprs([int_g1 + int_g2],
             source_dependent_variables=[density])
