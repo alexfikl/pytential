@@ -592,14 +592,6 @@ if __name__ == "__main__":
     from pytential.array_context import _acf  # noqa: F401
 
     if len(sys.argv) > 1:
-        import pyopencl as cl
-        from arraycontext import PyOpenCLArrayContext
-        context = cl._csc()
-        queue = cl.CommandQueue(context)
-
-        def actx_factory():
-            return PyOpenCLArrayContext(queue)
-
         exec(sys.argv[1])
     else:
         from pytest import main
