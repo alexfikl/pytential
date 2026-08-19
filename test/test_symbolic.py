@@ -603,6 +603,56 @@ def test_derivative_with_spatial_constant():
 # }}}
 
 
+# {{{ test_system_kernel_int_g
+
+@pytest.mark.parametrize("dim", [2, 3])
+def test_system_kernel_int_g(dim: int) -> None:
+    from sumpy.kernel import LaplaceKernel, StokesletSystemKernel, StressletSystemKernel
+
+    name = "slp"
+    normal = sym.make_sym_vector("n", dim)
+    density = sym.make_sym_vector("q", dim)
+
+    mu = sym.var("mu")
+    x = sym.make_sym_vector("x", dim)
+
+    if name == "slp":
+        knl = sym.as_expr_kernel(StokesletSystemKernel(dim), kernel_arguments={"mu": mu})
+        expr = 1 + x * np.einsum("ij,j->i", knl, density / 2)
+    elif name == "dlp":
+        knl = sym.as_expr_kernel(StressletSystemKernel(dim), kernel_arguments={"mu", mu})
+        expr = 1 + x * np.einsum("ijk,i,k->j", knl, density / 2, normal / 3)
+    elif name == "stress":
+        u = sym.as_expr_kernel(StokesletSystemKernel(dim), kernel_arguments={"mu": mu})
+        p = sym.as_expr_kernel(LaplaceKernel(dim))
+
+        knl = -p.grad() + mu * (u.grad() + u.grad().T)
+        expr = 1 + x * np.einsum("ijk,i,k->j", knl, density / 2, normal / 3)
+    elif name == "grad":
+        knl = sym.as_expr_kernel(LaplaceKernel(dim))
+        expr = 1 + sym.var("x") * np.einsum("i,i->", knl.grad(), density / 2)
+    else:
+        raise ValueError(f"unknown layer potential: {name!r}")
+
+    from pytential.symbolic.mappers import flatten
+
+    expr = flatten(expr)
+    int_g_expr = flatten(sym.make_int_g(expr, qbx_forced_limit="avg"))
+
+    print("Result:")
+    if isinstance(expr, np.ndarray):
+        for expr_i in expr:
+            print("    " + sym.pretty(expr_i))
+
+        for expr_i in int_g_expr:
+            print("    " + sym.pretty(expr_i))
+    else:
+        print("    " + sym.pretty(expr))
+        print("    " + sym.pretty(int_g_expr))
+
+# }}}
+
+
 # You can test individual routines by typing
 # $ python test_symbolic.py 'test_routine()'
 
