@@ -150,7 +150,7 @@ def _get_kernel_expression(expr, kernel_arguments):
     from pymbolic.mapper.substitutor import substitute
 
     pymbolic_expr = substitute(expr, kernel_arguments)
-    res = prim.PymbolicToSympyMapperWithSymbols()(pymbolic_expr)
+    res = prim.to_symbolic(pymbolic_expr, symbols=True)
 
     return res
 
@@ -168,8 +168,6 @@ def convert_target_multiplier_to_source(int_g):
     TargetMultiplier and only source dependent transformations
     """
     import sympy
-
-    conv = prim.SympyToPymbolicMapper()
 
     knl = int_g.target_kernel
     # we use a symbol for d = (x - y)
@@ -218,7 +216,7 @@ def convert_target_multiplier_to_source(int_g):
         monom, coeff = rest_terms.terms()[0]
         expr_multiplier = _monom_to_expr(monom[:len(ds)], ds)
         density_multiplier = _monom_to_expr(monom[len(ds):], sources_pymbolic) \
-                * conv(coeff)
+                * prim.to_symbolic(coeff)
 
         new_int_gs = _multiply_int_g(int_g, prim.sympify(expr_multiplier),
                 density_multiplier)
@@ -252,13 +250,13 @@ def _multiply_int_g(int_g, expr_multiplier, density_multiplier):
     sym_d = prim.make_sym_vector("d", base_kernel.dim)
     base_kernel_expr = _get_kernel_expression(base_kernel.expression,
             int_g.kernel_arguments)
-    conv = prim.SympyToPymbolicMapper()
 
     for knl, density in zip(int_g.source_kernels, int_g.densities, strict=True):
         if expr_multiplier == 1:
             new_knl = knl.get_base_kernel()
         else:
-            new_expr = conv(knl.postprocess_at_source(base_kernel_expr, sym_d)
+            new_expr = prim.to_pymbolic(
+                    knl.postprocess_at_source(base_kernel_expr, sym_d)
                     * expr_multiplier)
             new_knl = ExpressionKernel(
                 dim=knl.dim, expression=new_expr,
@@ -345,7 +343,6 @@ def get_deriv_relation_kernel(kernel, base_kernel, tol=1e-10, order=None,
     (L, U, perm), rand, mis = _get_base_kernel_matrix(base_kernel, order=order)
     dim = base_kernel.dim
     sym_vec = prim.make_sym_vector("d", dim)
-    sympy_conv = prim.SympyToPymbolicMapper()
 
     expr = _get_kernel_expression(kernel.expression, kernel_arguments)
     vec = []
@@ -368,10 +365,10 @@ def get_deriv_relation_kernel(kernel, base_kernel, tol=1e-10, order=None,
                     kernel_arguments)
             coeff /= _get_kernel_expression(base_kernel.global_scaling_const,
                     kernel_arguments)
-            result.append((mis[i], sympy_conv(coeff)))
+            result.append((mis[i], prim.to_pymbolic(coeff)))
             logger.debug("  + %s.diff(%s)*%s", base_kernel, mis[i], coeff)
         else:
-            const = sympy_conv(coeff * _get_kernel_expression(
+            const = prim.to_pymbolic(coeff * _get_kernel_expression(
                 kernel.global_scaling_const, kernel_arguments))
     logger.debug("  + %s", const)
     return (const, result)
@@ -950,12 +947,10 @@ def simplify_densities(densities):
     """
     from pymbolic.mapper import UnsupportedExpressionError
 
-    to_sympy = prim.PymbolicToSympyMapper()
-    to_pymbolic = prim.SympyToPymbolicMapper()
     result = []
     for density in densities:
         try:
-            result.append(to_pymbolic(to_sympy(density)))
+            result.append(prim.to_pymbolic(prim.to_symbolic(density)))
         except (ValueError, NotImplementedError, UnsupportedExpressionError):
             logger.debug("%s cannot be simplified", density)
             result.append(density)
@@ -979,9 +974,9 @@ if __name__ == "__main__":
 
     sym_d = prim.make_sym_vector("d", base_kernel.dim)
     sym_r = prim.sqrt(sum(a**2 for a in sym_d))
-    conv = prim.SympyToPymbolicMapper()
-    expression_knl = ExpressionKernel(3, conv(sym_d[0]*sym_d[1]/sym_r**3), 1, False)
-    expression_knl2 = ExpressionKernel(3, conv(1/sym_r + sym_d[0]*sym_d[0]/sym_r**3),
-        1, False)
+    expression_knl = ExpressionKernel(
+        3, prim.to_pymbolic(sym_d[0]*sym_d[1]/sym_r**3), 1, False)
+    expression_knl2 = ExpressionKernel(
+        3, prim.to_pymbolic(1/sym_r + sym_d[0]*sym_d[0]/sym_r**3), 1, False)
     kernels = [expression_knl, expression_knl2]
     get_deriv_relation(kernels, base_kernel, tol=1e-10, order=4)

@@ -31,7 +31,7 @@ from sumpy.kernel import (
     AxisSourceDerivative,
     AxisTargetDerivative,
     BiharmonicKernel,
-    ElasticityKernel,
+    ElasticityComponentKernel,
     LaplaceKernel,
     StokesletComponentKernel,
     StressletComponentKernel,
@@ -354,14 +354,14 @@ class _StokesletWrapperNaiveOrBiharmonic(StokesletWrapperBase):
             raise ValueError("method has to be one of biharmonic/naive")
 
         self.kernel_dict = {}
-        # The two cases of nu=0.5 and nu!=0.5 differ significantly and
-        # ElasticityKernel needs to know if nu=0.5 or not at creation time
-        poisson_ratio = "nu" if nu_sym != 0.5 else 0.5  # ruff: ignore[float-equality-comparison]
-
         for i in range(dim):
             for j in range(i, dim):
-                self.kernel_dict[i, j] = ElasticityKernel(dim=dim, icomp=i,
-                    jcomp=j, poisson_ratio=poisson_ratio)
+                if nu_sym == 0.5:  # ruff: ignore[float-equality-comparison]
+                    self.kernel_dict[i, j] = StokesletComponentKernel(
+                        dim=dim, icomp=i, jcomp=j)
+                else:
+                    self.kernel_dict[i, j] = ElasticityComponentKernel(
+                        dim=dim, icomp=i, jcomp=j, poisson_ratio_name="nu")
 
         # The dictionary allows us to exploit symmetry -- that
         # :math:`T_{01}` is identical to :math:`T_{10}` -- and avoid creating
