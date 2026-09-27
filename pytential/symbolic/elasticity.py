@@ -75,7 +75,7 @@ class StressletWrapperYoshida(StressletWrapperBase):
         lam = 2*nu*mu/(1-2*nu)
         stokeslet_weight *= -1
 
-        def C(i, j, k, l):   # noqa: E741
+        def C(i, j, k, l):  # ruff: ignore[ambiguous-variable-name]
             res = 0
             if i == j and k == l:
                 res += lam
@@ -119,7 +119,7 @@ class StressletWrapperYoshida(StressletWrapperBase):
         for i in range(3):
             for k in range(3):
                 densities = [0]*4
-                for l in range(3):   # noqa: E741
+                for l in range(3):   # ruff: ignore[ambiguous-variable-name]
                     for j in range(3):
                         for m in range(3):
                             densities[l] += C(k, l, m, j)*normal[m]*sigma[j]
@@ -134,7 +134,7 @@ class StressletWrapperYoshida(StressletWrapperBase):
             for k in range(3):
                 for m in range(3):
                     for j in range(3):
-                        for l in range(3):   # noqa: E741
+                        for l in range(3):   # ruff: ignore[ambiguous-variable-name]
                             densities[l] += \
                                     C(k, l, m, j)*normal[m]*sigma[j]*source[k]
                             if k == l:

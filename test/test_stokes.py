@@ -164,7 +164,7 @@ def run_exterior_stokes(actx_factory, *,
     sym_normal = sym.make_sym_vector("normal", ambient_dim)
     sym_mu = SpatialConstant("mu2")
 
-    if nu == 0.5:
+    if nu == 0.5:  # ruff: ignore[float-equality-comparison]
         sym_nu = 0.5
     else:
         sym_nu = SpatialConstant("nu2")
@@ -224,7 +224,7 @@ def run_exterior_stokes(actx_factory, *,
         op_context = {"mu2": mu, "normal": normal}
     direct_context = {"mu2": mu}
 
-    if sym_nu != 0.5:
+    if sym_nu != 0.5:  # ruff: ignore[float-equality-comparison]
         bc_context["nu2"] = nu
         op_context["nu2"] = nu
         direct_context["nu2"] = nu

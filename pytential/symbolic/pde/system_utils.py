@@ -56,9 +56,9 @@ from pytential.utils import chop, lu_solve_with_expand
 logger = logging.getLogger(__name__)
 
 __all__ = (
-    "merge_int_g_exprs",
     "get_deriv_relation",
-    )
+    "merge_int_g_exprs",
+)
 
 __doc__ = """
 .. autofunction:: rewrite_using_base_kernel
@@ -398,7 +398,7 @@ def _get_base_kernel_matrix(base_kernel, order=None, retries=3,
     mis.append((-1, -1, -1))
 
     if order == pde.order:
-        pde_mis = [ident.mi for eq in pde.eqs for ident in eq.keys()]
+        pde_mis = [ident.mi for eq in pde.eqs for ident in eq]
         pde_mis = [mi for mi in pde_mis if sum(mi) == order]
         logger.debug("Removing %s to avoid linear dependent mis", pde_mis[-1])
         mis.remove(pde_mis[-1])
@@ -471,8 +471,10 @@ def filter_kernel_arguments(knls, kernel_arguments):
     kernel_arg_names = set()
 
     for kernel in knls:
-        for karg in (kernel.get_args() + kernel.get_source_args()):
-            kernel_arg_names.add(karg.loopy_arg.name)
+        kernel_arg_names.update(
+            karg.loopy_arg.name
+            for karg in (*kernel.get_args(), *kernel.get_source_args())
+        )
 
     return {k: v for (k, v) in kernel_arguments.items() if k in kernel_arg_names}
 
@@ -652,9 +654,7 @@ def merge_int_g_exprs(exprs, source_dependent_variables=None):
 
 
 def get_number_of_fmms(exprs):
-    fmms = set()
-    for int_g in get_int_g_s(exprs):
-        fmms.add(remove_target_attributes(int_g))
+    fmms = {remove_target_attributes(int_g) for int_g in get_int_g_s(exprs)}
     return len(fmms)
 
 
@@ -964,7 +964,7 @@ def simplify_densities(densities):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG)
-    from sumpy.kernel import (  # noqa:F401
+    from sumpy.kernel import (  # ruff: ignore[unused-import]
         BiharmonicKernel,
         ElasticityKernel,
         LaplaceKernel,

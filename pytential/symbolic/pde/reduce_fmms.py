@@ -379,8 +379,10 @@ def _kernel_source_derivs_as_poly(kernel, axis_vars):
     if isinstance(kernel, AxisSourceDerivative):
         poly = _kernel_source_derivs_as_poly(kernel.inner_kernel, axis_vars)
         return -axis_vars[kernel.axis]*poly
+
     if isinstance(kernel, KernelWrapper):
-        raise ValueError
+        raise TypeError
+
     return 1
 
 # }}}
