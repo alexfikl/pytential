@@ -39,6 +39,8 @@ dependencies = [
     "pytools>=2024.1",
     "scipy>=1.2",
     "sumpy>=2022.1",
+    # for sentinel
+    "typing-extensions>=4.14",
 ]
 
 [project.optional-dependencies]
@@ -83,21 +85,21 @@ extend-select = [
     "NPY",  # numpy
     "Q",    # flake8-quotes
     "RUF",  # ruff
+    "TC",   # flake8-type-checking
     "UP",   # pyupgrade
     "W",    # pycodestyle
-    "TC",
 ]
 extend-ignore = [
-    "C90",  # McCabe complexity
-    "E226", # missing whitespace around arithmetic operator
-    "E402", # module level import not at the top of file
-    "N802", # function name should be lowercase
-    "N803", # argument name should be lowercase
-    "N806", # variable name should be lowercase
-    "RUF012", # ClassVar for mutable class attributes
-    "RUF022", # __all__ is not sorted
-    "UP031", # use f-strings instead of %
-    "UP032", # use f-strings instead of .format
+    "complex-structure",
+    "f-string",
+    "invalid-argument-name",
+    "invalid-function-name",
+    "missing-whitespace-around-arithmetic-operator",
+    "module-import-not-at-top-of-file",
+    "non-empty-init-module",
+    "non-lowercase-variable-in-function",
+    "printf-string-formatting",
+    "pytest-parameter-with-default-argument",
 ]
 exclude = [
     "experiments/*.py",
@@ -106,8 +108,9 @@ exclude = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"doc/*.py" = ["I002"]
-"examples/*.py" = ["I002"]
+"doc/*.py" = ["missing-required-import", "exec-builtin"]
+"examples/*.py" = ["missing-required-import"]
+"test/test_*.py" = ["exec-builtin"]
 
 [tool.ruff.lint.flake8-quotes]
 docstring-quotes = "double"
@@ -160,9 +163,13 @@ reportImportCycles = "none"
 
 reportPrivateUsage = "hint"
 
-pythonVersion = "3.10"
+# covered by ruff
+reportUnusedImport = "none"
+
+pythonVersion = "3.12"
 pythonPlatform = "All"
 
+enableExperimentalFeatures = true
 ignore = [
     "build",
     "doc/_build",
@@ -170,6 +177,7 @@ ignore = [
     "experiments",
     "pytential/symbolic/old_diffop_primitives.py",
     "pytential/symbolic/pde/maxwell/generalized_debye.py",
+    ".venv",
 ]
 
 [[tool.basedpyright.executionEnvironments]]
@@ -195,4 +203,3 @@ reportPrivateImportUsage = "hint"
 reportPrivateUsage = "hint"
 reportUnknownLambdaType = "hint"
 reportMissingTypeStubs = "hint"
-reportUnusedImport = "none"

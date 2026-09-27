@@ -43,12 +43,18 @@ from pytential.symbolic.primitives import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Collection, Hashable, Iterator, Sequence, Set
+    from collections.abc import (
+        Collection,
+        Hashable,
+        Iterator,
+        Sequence,
+        Set as AbstractSet,
+    )
 
     from pymbolic.geometric_algebra import MultiVector
     from pymbolic.mapper.dependency import Dependency
     from pymbolic.typing import Expression
-    from sumpy.kernel import Kernel
+    from sumpy.kernel import ScalarKernel
 
     from pytential.collection import GeometryCollection
     from pytential.symbolic.primitives import KernelArgumentMapping, Operand
@@ -223,14 +229,14 @@ class ComputePotential(Statement):
     """A tuple of :class:`PotentialOutput` instances. The entries in the list
     correspond to :attr:`Statement.names`.
     """
-    target_kernels: tuple[Kernel, ...]
-    """A tuple of :class:`sumpy.kernel.Kernel` instances, indexed by
+    target_kernels: tuple[ScalarKernel, ...]
+    """A tuple of :class:`sumpy.kernel.ScalarKernel` instances, indexed by
     :attr:`PotentialOutput.target_kernel_index`.
     """
     kernel_arguments: KernelArgumentMapping
     """A dictionary mapping argument names to kernel arguments."""
-    source_kernels: tuple[Kernel, ...]
-    """A tuple of :class:`sumpy.kernel.Kernel` instances with only source
+    source_kernels: tuple[ScalarKernel, ...]
+    """A tuple of :class:`sumpy.kernel.ScalarKernel` instances with only source
     derivatives and no target derivatives. See the
     :class:`~pytential.symbolic.primitives.IntG` docstring for details.
     """
@@ -327,8 +333,9 @@ def dot_dataflow_graph(
     node_names: dict[Statement, str] = {}
 
     result = [
-            'initial [label="initial"]'
-            'result [label="result"]']
+        'initial [label="initial"];',
+        'result [label="result"];',
+    ]
 
     for num, insn in enumerate(code.statements):
         node_name = f"node{num}"
@@ -374,7 +381,7 @@ def dot_dataflow_graph(
     else:
         gen_expr_arrow(code_res, "result")
 
-    return "digraph dataflow {\n%s\n}\n" % "\n".join(result)
+    return "digraph dataflow {\n  %s\n}\n" % "\n  ".join(result)
 
 # }}}
 
@@ -431,8 +438,8 @@ def _get_next_step(
         dep_mapper: DependencyMapper,
         statements: Sequence[Statement],
         result: CodeResultT,
-        available_names: Set[str],
-        done_stmts: Set[Statement]
+        available_names: AbstractSet[str],
+        done_stmts: AbstractSet[Statement]
         ) -> tuple[Statement, set[str]]:
 
     from pytools import argmax2

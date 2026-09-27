@@ -25,6 +25,7 @@ THE SOFTWARE.
 
 from typing import TYPE_CHECKING
 
+from constantdict import constantdict
 from typing_extensions import override
 
 from pymbolic.geometric_algebra import componentwise
@@ -52,11 +53,11 @@ __doc__ = """
 
 # {{{ utils
 
-class PROXY_SKELETONIZATION_SOURCE:             # noqa: N801
+class PROXY_SKELETONIZATION_SOURCE:             # ruff:ignore[invalid-class-name]
     pass
 
 
-class PROXY_SKELETONIZATION_TARGET:             # noqa: N801
+class PROXY_SKELETONIZATION_TARGET:             # ruff:ignore[invalid-class-name]
     pass
 
 
@@ -83,11 +84,9 @@ def prepare_proxy_expr(
         # ensure all IntGs remove all the kernel derivatives
         expr = KernelTransformationRemover()(expr)
         # ensure all IntGs have their source and targets set
-        expr = DOFDescriptorReplacer(
+        return DOFDescriptorReplacer(
                                      default_source=auto_where[0],
                                      default_target=auto_where[1]).rec_arith(expr)
-
-        return expr
 
     return obj_array.new_1d([_prepare_expr(expr) for expr in exprs])
 
@@ -139,7 +138,7 @@ class KernelTransformationRemover(IdentityMapper):
                        target_kernel=target_kernel,
                        source_kernels=source_kernels,
                        densities=self.rec(expr.densities),
-                       kernel_arguments=kernel_arguments)
+                       kernel_arguments=constantdict(kernel_arguments))
 
 # }}}
 
@@ -236,10 +235,10 @@ class _LocationReplacer(LocationTagger):
                 densities=tuple(self.rec_arith(d) for d in expr.densities),
                 qbx_forced_limit=expr.qbx_forced_limit,
                 source=self.default_source, target=self.default_target,
-                kernel_arguments={
+                kernel_arguments=constantdict({
                     name: componentwise(self.rec_arith, arg_expr)
                     for name, arg_expr in expr.kernel_arguments.items()
-                    }
+                    })
                 )
 
 

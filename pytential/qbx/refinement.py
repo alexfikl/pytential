@@ -27,7 +27,8 @@ THE SOFTWARE.
 """
 
 import logging
-from typing import cast
+from enum import Enum, auto
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
@@ -42,10 +43,17 @@ from pytools import ProcessLogger, log_process, memoize_in, memoize_method
 from pytential.qbx.utils import (
     QBX_TREE_C_PREAMBLE,
     QBX_TREE_MAKO_DEFS,
+    TreeCodeContainer,
     TreeCodeContainerMixin,
     TreeWranglerBase,
 )
 
+
+if TYPE_CHECKING:
+    from meshmode.discretization import ElementGroupFactory
+
+    from pytential.collection import GeometryCollection
+    from pytential.symbolic.dof_desc import DiscretizationStage
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +78,15 @@ three global QBX refinement criteria:
       The element size is bounded by a kernel length scale. This
       applies only to Helmholtz kernels.
 
-Warnings emitted by refinement
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Refinement mode
+^^^^^^^^^^^^^^^
+
+.. autoclass:: QBXRefinementMode
+
+Errors and warnings emitted by refinement
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. autoclass:: QBXRefinementNeededError
 
 .. autoclass:: RefinerNotConvergedWarning
 
@@ -89,6 +104,53 @@ Refiner driver
 
 .. autofunction:: refine_geometry_collection
 """
+
+
+# {{{ QBXRefinementMode
+
+class QBXRefinementMode(Enum):
+    """Controls the refinement behavior of a
+    :class:`~pytential.qbx.QBXLayerPotentialSource`.
+
+    .. attribute:: REFINE
+
+        Perform refinement as needed. This is the default behavior.
+
+    .. attribute:: NO_REFINEMENT
+
+        Skip refinement entirely. An
+        :class:`~meshmode.discretization.connection.IdentityDiscretizationConnection`
+        is returned instead of performing any mesh refinement.
+
+        .. warning::
+
+            Executing global QBX without refinement is unlikely to give
+            accurate results.
+
+    .. attribute:: ERROR_ON_REFINEMENT
+
+        Do not perform any refinement, but raise a
+        :class:`QBXRefinementNeededError` if stage-1 or stage-2 refinement
+        would be required to satisfy the QBX refinement criteria.
+
+        .. note::
+
+            Refinement resulting from
+            ``force_stage2_uniform_refinement_rounds`` is still carried out.
+    """
+
+    REFINE = auto()
+    NO_REFINEMENT = auto()
+    ERROR_ON_REFINEMENT = auto()
+
+
+class QBXRefinementNeededError(RuntimeError):
+    """Raised when :attr:`QBXRefinementMode.ERROR_ON_REFINEMENT` is in effect and
+    refinement would be needed to satisfy the QBX refinement criteria.
+    """
+
+# }}}
+
 
 # {{{ kernels
 
@@ -224,8 +286,10 @@ SUFFICIENT_SOURCE_QUADRATURE_RESOLUTION_CHECKER = AreaQueryElementwiseTemplate(
 # {{{ code container
 
 class RefinerCodeContainer(TreeCodeContainerMixin):
+    array_context: PyOpenCLArrayContext
+    tree_code_container: TreeCodeContainer
 
-    def __init__(self, actx: PyOpenCLArrayContext):
+    def __init__(self, actx: PyOpenCLArrayContext) -> None:
         self.array_context = actx
 
         from pytential.qbx.utils import tree_code_container
@@ -233,8 +297,13 @@ class RefinerCodeContainer(TreeCodeContainerMixin):
 
     @memoize_method
     def expansion_disk_undisturbed_by_sources_checker(
-            self, dimensions, coord_dtype, box_id_dtype, peer_list_idx_dtype,
-            particle_id_dtype, max_levels):
+            self,
+            dimensions: int,
+            coord_dtype: np.dtype[np.floating[Any]],
+            box_id_dtype: np.dtype[np.integer[Any]],
+            peer_list_idx_dtype: np.dtype[np.integer[Any]],
+            particle_id_dtype: np.dtype[np.integer[Any]],
+            max_levels: int) -> int:
         return EXPANSION_DISK_UNDISTURBED_BY_SOURCES_CHECKER.generate(
                 self.array_context.context,
                 dimensions, coord_dtype, box_id_dtype, peer_list_idx_dtype,
@@ -474,9 +543,8 @@ class RefinerWrangler(TreeWranglerBase):
         with ProcessLogger(logger, "refine mesh"):
             refiner.refine(refine_flags)
             from meshmode.discretization.connection import make_refinement_connection
-            conn = make_refinement_connection(actx, refiner, density_discr, factory)
+            return make_refinement_connection(actx, refiner, density_discr, factory)
 
-        return conn
 
 # }}}
 
@@ -603,7 +671,7 @@ def _refine_qbx_stage1(lpot_source, density_discr,
         expansion_disturbance_tolerance=None,
         maxiter=None, debug=None, visualize=False):
     from pytential import bind, sym
-    if lpot_source._disable_refinement:
+    if lpot_source.refinement_mode == QBXRefinementMode.NO_REFINEMENT:
         from meshmode.discretization.connection import IdentityDiscretizationConnection
         return density_discr, IdentityDiscretizationConnection(density_discr)
 
@@ -704,6 +772,13 @@ def _refine_qbx_stage1(lpot_source, density_discr,
         if iter_violated_criteria:
             violated_criteria.append(" and ".join(iter_violated_criteria))
 
+            if lpot_source.refinement_mode == QBXRefinementMode.ERROR_ON_REFINEMENT:
+                raise QBXRefinementNeededError(
+                    "Stage-1 QBX refinement is needed but refinement mode is "
+                    f"'{QBXRefinementMode.ERROR_ON_REFINEMENT.name}'. "
+                    "Criteria requiring refinement: "
+                    + ", ".join(iter_violated_criteria))
+
             conn = wrangler.refine(
                     stage1_density_discr, refiner, refine_flags,
                     group_factory, debug)
@@ -724,7 +799,7 @@ def _refine_qbx_stage2(lpot_source, stage1_density_discr,
         expansion_disturbance_tolerance=None,
         force_stage2_uniform_refinement_rounds=None,
         maxiter=None, debug=None, visualize=False):
-    if lpot_source._disable_refinement:
+    if lpot_source.refinement_mode == QBXRefinementMode.NO_REFINEMENT:
         from meshmode.discretization.connection import IdentityDiscretizationConnection
         return (stage1_density_discr,
                 IdentityDiscretizationConnection(stage1_density_discr))
@@ -775,6 +850,13 @@ def _refine_qbx_stage2(lpot_source, stage1_density_discr,
 
         if iter_violated_criteria:
             violated_criteria.append(" and ".join(iter_violated_criteria))
+
+            if lpot_source.refinement_mode == QBXRefinementMode.ERROR_ON_REFINEMENT:
+                raise QBXRefinementNeededError(
+                    "Stage-2 QBX refinement is needed but refinement mode is "
+                    f"'{QBXRefinementMode.ERROR_ON_REFINEMENT.name}'. "
+                    "Criteria requiring refinement: "
+                    + ", ".join(iter_violated_criteria))
 
             conn = wrangler.refine(
                     stage2_density_discr,
@@ -839,7 +921,7 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
     from pytential.qbx import QBXLayerPotentialSource
     lpot_source = places.get_geometry(dofdesc.geometry)
     if not isinstance(lpot_source, QBXLayerPotentialSource):
-        raise ValueError(f"'{dofdesc.geometry}' is not a QBXLayerPotentialSource")
+        raise TypeError(f"'{dofdesc.geometry}' is not a QBXLayerPotentialSource")
 
     # {{{
 
@@ -935,15 +1017,17 @@ def _refine_for_global_qbx(places, dofdesc, wrangler,
 
 # {{{ refine_geometry_collection
 
-def refine_geometry_collection(places,
-        group_factory=None,
-        refine_discr_stage=None,
-        kernel_length_scale=None,
-        force_stage2_uniform_refinement_rounds=None,
-        scaled_max_curvature_threshold=None,
-        expansion_disturbance_tolerance=None,
-        maxiter=None,
-        debug=None, visualize=False):
+def refine_geometry_collection(
+        places: GeometryCollection,
+        group_factory: ElementGroupFactory | None = None,
+        refine_discr_stage: DiscretizationStage | None = None,
+        kernel_length_scale: float | np.floating[Any] | None = None,
+        force_stage2_uniform_refinement_rounds: int | None = None,
+        scaled_max_curvature_threshold: float | None = None,
+        expansion_disturbance_tolerance: float | None = None,
+        maxiter: int | None = None,
+        debug: bool | None = None,
+        visualize: bool = False) -> GeometryCollection:
     """Entry point for refining all the
     :class:`~pytential.qbx.QBXLayerPotentialSource` in the given collection.
     The :class:`~pytential.collection.GeometryCollection` performs

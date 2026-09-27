@@ -28,7 +28,7 @@ from functools import partial
 from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
 import numpy as np
-from typing_extensions import override
+from typing_extensions import Sentinel, override
 
 from arraycontext import (
     Array,
@@ -46,6 +46,7 @@ from sumpy.expansion import (
 )
 from sumpy.expansion.local import LocalExpansionBase
 
+from pytential.qbx.refinement import QBXRefinementMode, QBXRefinementNeededError
 from pytential.qbx.target_assoc import QBXTargetAssociationFailedError
 from pytential.source import LayerPotentialSourceBase
 
@@ -57,7 +58,7 @@ if TYPE_CHECKING:
     from pymbolic import ArithmeticExpression
     from sumpy.expansion import LocalExpansionFactory
     from sumpy.fmm import FMMLevelToOrder
-    from sumpy.kernel import Kernel
+    from sumpy.kernel import ScalarKernel
 
     from pytential.collection import GeometryCollection, GeometryLike
     from pytential.qbx.cost import AbstractQBXCostModel
@@ -84,10 +85,12 @@ __doc__ = """
 .. autoclass:: QBXDefaultExpansionFactory
 
 .. autoclass:: NonFFTExpansionFactory
+
+.. autodata:: FMMBackend
 """
 
 
-FMMBackend: TypeAlias = Literal["sumpy"] | Literal["fmmlib"]
+FMMBackend: TypeAlias = Literal["sumpy", "fmmlib"]
 
 
 # {{{ QBX layer potential source
@@ -96,7 +99,7 @@ class QBXDefaultExpansionFactory(DefaultExpansionFactoryBase):
     """An expansion factory to create QBX local, local and multipole expansions
     """
     def get_qbx_local_expansion_class(self,
-                kernel: Kernel, /
+                kernel: ScalarKernel, /
             ) -> LocalExpansionFactory:
         local_expn_class = DefaultExpansionFactoryBase.get_local_expansion_class(
                 self, kernel)
@@ -116,8 +119,7 @@ class NonFFTExpansionFactory(QBXDefaultExpansionFactory):
     get_local_expansion_class = QBXDefaultExpansionFactory.get_qbx_local_expansion_class
 
 
-class _not_provided:  # noqa: N801
-    pass
+NOT_PROVIDED = Sentinel("NOT_PROVIDED")
 
 
 class QBXLayerPotentialSource(LayerPotentialSourceBase):
@@ -145,7 +147,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
     target_association_tolerance: float
 
     debug: bool
-    _disable_refinement: bool
+    refinement_mode: QBXRefinementMode
     _expansions_in_tree_have_extent: bool
     _expansion_stick_out_factor: float
     _well_sep_is_n_away: int
@@ -168,12 +170,13 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             fmm_level_to_order: Literal[False] | FMMLevelToOrder | None = None,
             expansion_factory: QBXDefaultExpansionFactory | None = None,
             target_association_tolerance: (
-                float | type[_not_provided] | None) = _not_provided,
+                float | NOT_PROVIDED | None) = NOT_PROVIDED,
 
             # begin experimental arguments
             # FIXME default debug=False once everything has matured
             debug: bool = True,
-            _disable_refinement: bool = False,
+            refinement_mode: QBXRefinementMode | None = None,
+            _disable_refinement: bool | None = None,
             _expansions_in_tree_have_extent: bool = True,
             _expansion_stick_out_factor: float = 0.5,
             _max_leaf_refine_weight: int | None = None,
@@ -196,7 +199,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
         :arg fmm_level_to_order: A callable that takes arguments of
             *(kernel, kernel_args, tree, level)* and returns the expansion
             order to be used on a given *level* of *tree* with *kernel*, where
-            *kernel* is the :class:`sumpy.kernel.Kernel` being evaluated, and
+            *kernel* is the :class:`sumpy.kernel.ScalarKernel` being evaluated, and
             *kernel_args* is a set of *(key, value)* tuples with evaluated
             kernel arguments. May not be given if *fmm_order* is given.
         :arg fmm_backend: a string denoting the desired FMM backend to use,
@@ -206,6 +209,8 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             the FMM evaluations.
         :arg target_association_tolerance: passed on to
             :func:`pytential.qbx.target_assoc.associate_targets_to_qbx_centers`.
+        :arg refinement_mode: A :class:`~pytential.qbx.refinement.QBXRefinementMode`
+            controlling whether and how refinement is performed.
 
         Experimental arguments without a promise of forward compatibility:
 
@@ -232,6 +237,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
         :arg cost_model: Either *None* or an object implementing the
              :class:`~pytential.qbx.cost.AbstractQBXCostModel` interface, used for
              gathering modeled costs if provided (experimental).
+        :arg _disable_refinement: Deprecated. Use *refinement_mode* instead.
         """
 
         # {{{ argument processing
@@ -244,7 +250,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             raise ValueError("'qbx_order' must be provided.")
         assert isinstance(qbx_order, int)
 
-        if target_association_tolerance is _not_provided:
+        if target_association_tolerance is NOT_PROVIDED:
             target_association_tolerance = (
                 1.0e+3 * float(np.finfo(density_discr.real_dtype).eps))
         assert isinstance(target_association_tolerance, float)
@@ -315,6 +321,21 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             from pytential.qbx.cost import QBXCostModel
             cost_model = QBXCostModel()
 
+        if _disable_refinement is not None:
+            from warnings import warn
+            warn(
+                "'_disable_refinement' is deprecated. "
+                "Use 'refinement_mode' instead.",
+                DeprecationWarning, stacklevel=2)
+            if refinement_mode is None:
+                refinement_mode = (
+                    QBXRefinementMode.NO_REFINEMENT
+                    if _disable_refinement
+                    else QBXRefinementMode.REFINE)
+
+        if refinement_mode is None:
+            refinement_mode = QBXRefinementMode.REFINE
+
         # }}}
 
         if density_discr.dim != density_discr.ambient_dim - 1:
@@ -333,7 +354,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
         self.target_association_tolerance = target_association_tolerance
 
         self.debug = debug
-        self._disable_refinement = _disable_refinement
+        self.refinement_mode = refinement_mode
         self._expansions_in_tree_have_extent = _expansions_in_tree_have_extent
         self._expansion_stick_out_factor = _expansion_stick_out_factor
         self._well_sep_is_n_away = _well_sep_is_n_away
@@ -358,39 +379,52 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
             density_discr=None,
             fine_order=None,
             qbx_order=None,
-            fmm_order=_not_provided,
-            fmm_level_to_order=_not_provided,
+            fmm_order=NOT_PROVIDED,
+            fmm_level_to_order=NOT_PROVIDED,
             expansion_factory=None,
-            target_association_tolerance=_not_provided,
-            _expansions_in_tree_have_extent=_not_provided,
-            _expansion_stick_out_factor=_not_provided,
+            target_association_tolerance=NOT_PROVIDED,
+            _expansions_in_tree_have_extent=NOT_PROVIDED,
+            _expansion_stick_out_factor=NOT_PROVIDED,
             _max_leaf_refine_weight=None,
             _box_extent_norm=None,
             _from_sep_smaller_crit=None,
             _tree_kind=None,
-            _use_target_specific_qbx=_not_provided,
+            _use_target_specific_qbx=NOT_PROVIDED,
             geometry_data_inspector=None,
-            cost_model=_not_provided,
+            cost_model=NOT_PROVIDED,
             fmm_backend=None,
 
-            debug=_not_provided,
-            _disable_refinement=_not_provided,
+            debug=NOT_PROVIDED,
+            refinement_mode=NOT_PROVIDED,
+            _disable_refinement=NOT_PROVIDED,
             ):
-        if target_association_tolerance is _not_provided:
+        if target_association_tolerance is NOT_PROVIDED:
             target_association_tolerance = self.target_association_tolerance
 
         kwargs = {}
 
-        if (fmm_order is not _not_provided
-                and fmm_level_to_order is not _not_provided):
+        if (fmm_order is not NOT_PROVIDED
+                and fmm_level_to_order is not NOT_PROVIDED):
             raise TypeError(
                 "may not specify both 'fmm_order' and 'fmm_level_to_order'")
-        elif fmm_order is not _not_provided:
+        elif fmm_order is not NOT_PROVIDED:
             kwargs["fmm_order"] = fmm_order
-        elif fmm_level_to_order is not _not_provided:
+        elif fmm_level_to_order is not NOT_PROVIDED:
             kwargs["fmm_level_to_order"] = fmm_level_to_order
         else:
             kwargs["fmm_level_to_order"] = self.fmm_level_to_order
+
+        if _disable_refinement is not NOT_PROVIDED:
+            from warnings import warn
+            warn(
+                "'_disable_refinement' is deprecated. "
+                "Use 'refinement_mode' instead.",
+                DeprecationWarning, stacklevel=2)
+            if refinement_mode is NOT_PROVIDED:
+                refinement_mode = (
+                    QBXRefinementMode.NO_REFINEMENT
+                    if _disable_refinement
+                    else QBXRefinementMode.REFINE)
 
         # FIXME Could/should share wrangler and geometry kernels
         # if no relevant changes have been made.
@@ -406,21 +440,20 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
 
                 debug=(
                     # False is a valid value here
-                    debug if debug is not _not_provided else self.debug),
-                _disable_refinement=(
-                    # False is a valid value here
-                    _disable_refinement
-                    if _disable_refinement is not _not_provided
-                    else self._disable_refinement),
+                    debug if debug is not NOT_PROVIDED else self.debug),
+                refinement_mode=(
+                    refinement_mode
+                    if refinement_mode is not NOT_PROVIDED
+                    else self.refinement_mode),
                 _expansions_in_tree_have_extent=(
                     # False is a valid value here
                     _expansions_in_tree_have_extent
-                    if _expansions_in_tree_have_extent is not _not_provided
+                    if _expansions_in_tree_have_extent is not NOT_PROVIDED
                     else self._expansions_in_tree_have_extent),
                 _expansion_stick_out_factor=(
                     # 0 is a valid value here
                     _expansion_stick_out_factor
-                    if _expansion_stick_out_factor is not _not_provided
+                    if _expansion_stick_out_factor is not NOT_PROVIDED
                     else self._expansion_stick_out_factor),
                 _well_sep_is_n_away=self._well_sep_is_n_away,
                 _max_leaf_refine_weight=(
@@ -432,14 +465,14 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
                     self._from_sep_smaller_min_nsources_cumul),
                 _tree_kind=_tree_kind or self._tree_kind,
                 _use_target_specific_qbx=(_use_target_specific_qbx
-                    if _use_target_specific_qbx is not _not_provided
+                    if _use_target_specific_qbx is not NOT_PROVIDED
                     else self._use_target_specific_qbx),
                 geometry_data_inspector=(
                     geometry_data_inspector or self.geometry_data_inspector),
                 cost_model=(
                     # None is a valid value here
                     cost_model
-                    if cost_model is not _not_provided
+                    if cost_model is not NOT_PROVIDED
                     else self.cost_model),
                 fmm_backend=fmm_backend or self.fmm_backend,
                 **kwargs)
@@ -493,12 +526,10 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
     @override
     def op_group_features(self, expr: IntG):
         from pytential.utils import sort_arrays_together
-        result = (
+        return (
                 expr.source,
                 *sort_arrays_together(expr.source_kernels, expr.densities, key=str)
                 )
-
-        return result
 
     # }}}
 
@@ -569,7 +600,7 @@ class QBXLayerPotentialSource(LayerPotentialSourceBase):
 
     def _dispatch_compute_potential_insn(self, actx, insn, bound_expr,
             evaluate, func, extra_args=None):
-        if self._disable_refinement:
+        if self.refinement_mode == QBXRefinementMode.NO_REFINEMENT:
             from warnings import warn
             warn(
                     "Executing global QBX without refinement. "
@@ -1054,7 +1085,7 @@ def get_flat_strengths_from_densities(
     density_dofarrays = [evaluate(density) for density in densities]
     for i, ary in enumerate(density_dofarrays):
         if not isinstance(ary, DOFArray):
-            raise ValueError(
+            raise TypeError(
                 f"DOFArray expected for density '{densities[i]}', "
                 f"{type(ary)} received instead")
 
@@ -1066,12 +1097,14 @@ def get_flat_strengths_from_densities(
 # }}}
 
 
-__all__ = [
-        "QBXLayerPotentialSource",
-        "QBXTargetAssociationFailedError",
-        "QBXDefaultExpansionFactory",
-        "ExpansionFactoryBase",
-        "LocalExpansionBase",
-        ]
+__all__ = (
+    "ExpansionFactoryBase",
+    "LocalExpansionBase",
+    "QBXDefaultExpansionFactory",
+    "QBXLayerPotentialSource",
+    "QBXRefinementMode",
+    "QBXRefinementNeededError",
+    "QBXTargetAssociationFailedError",
+)
 
 # vim: fdm=marker

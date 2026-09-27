@@ -44,7 +44,9 @@ from pytential.qbx.cost import (
     _PythonQBXCostModel,
     make_pde_aware_translation_cost_model,
 )
-from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
+from pytential.utils import (
+    pytest_teardown_function as teardown_function,  # ruff:ignore[unused-import]
+)
 
 
 logger = logging.getLogger(__name__)
@@ -313,11 +315,9 @@ def get_lpot_source(actx, dim):
             )
 
     from pytential.qbx import QBXLayerPotentialSource
-    lpot_source = QBXLayerPotentialSource(
+    return QBXLayerPotentialSource(
             pre_density_discr, OVSMP_FACTOR*target_order,
             **lpot_kwargs)
-
-    return lpot_source
 
 
 def get_density(actx, discr):
@@ -762,7 +762,7 @@ def test_cost_model_correctness(actx_factory: ArrayContextFactory, dim, off_surf
         total_cost += timing_data[stage]["ops_elapsed"]
 
     per_box_cost, _ = op_S.cost_per_box("constant_one", sigma=sigma)
-    logging.info(per_box_cost)
+    logger.info(per_box_cost)
     per_box_cost, = per_box_cost.values()
 
     total_aggregate_cost = cost_model.aggregate_over_boxes(actx, per_box_cost)
@@ -851,7 +851,7 @@ if __name__ == "__main__":
     import os
     import sys
 
-    from pytential.array_context import _acf  # noqa: F401
+    from pytential.array_context import _acf  # ruff:ignore[unused-import]
 
     logging.basicConfig(level=os.environ.get("LOGLEVEL", "WARNING"))
     if len(sys.argv) > 1:

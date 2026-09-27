@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING, Any, Generic, cast, overload
 import numpy as np
 from typing_extensions import override
 
-import pymbolic.primitives as p
 from arraycontext import (
     ArrayContext,
     ArrayOrContainer,
@@ -291,8 +290,7 @@ class EvaluationMapperBase(PymbolicEvaluationMapper[ArrayOrContainerOrScalar]):
 
         from pytential.linalg.gmres import gmres
         rhs = self.rec(expr.rhs)
-        result = gmres(scipy_op, rhs)
-        return result
+        return gmres(scipy_op, rhs)
 
     def map_interpolation(self, expr: pp.Interpolation):
         operand = self.rec(expr.operand)
@@ -543,9 +541,8 @@ class MatVecOp:
         #    => output is a flat PyOpenCL array
         # * structured arrays (object arrays/DOFArrays)
         #    => output has same structure as input
-        if isinstance(x, DOFArray):
-            flat, host = False, False
-        elif isinstance(x, np.ndarray) and x.dtype.char == "O":
+        if (isinstance(x, DOFArray) or
+                (isinstance(x, np.ndarray) and x.dtype.char == "O")):
             flat, host = False, False
         elif isinstance(x, self.array_context.array_types):
             flat, host = True, False
@@ -641,7 +638,7 @@ def _prepare_expr(places: GeometryCollection,
 
     # FIXME: There's some mismatch between OperandTc and a conditional union
     # type that I was too impatient to figure out in detail.
-    expr = componentwise(flatten, expr)  # pyright: ignore[reportAssignmentType]
+    expr = flatten(expr)
     auto_source, auto_target = _prepare_auto_where(auto_where, places=places)
     expr = componentwise(  # pyright: ignore[reportAssignmentType]
             ToTargetTagger(
@@ -656,9 +653,8 @@ def _prepare_expr(places: GeometryCollection,
             expr = place.preprocess_optemplate(name, places, expr)
 
     from pytential.symbolic.mappers import InterpolationPreprocessor
-    expr = InterpolationPreprocessor(places)(expr)
+    return InterpolationPreprocessor(places)(expr)
 
-    return expr
 
 # }}}
 

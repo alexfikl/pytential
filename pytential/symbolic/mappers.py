@@ -23,7 +23,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
 
-from collections.abc import Callable, Iterable, Set
+from collections.abc import Callable, Iterable, Set as AbstractSet
 from dataclasses import dataclass, replace
 from functools import reduce
 from typing import TYPE_CHECKING, cast
@@ -38,7 +38,7 @@ from pymbolic.geometric_algebra.mapper import (
     Collector as CollectorBase,
     CombineMapper as CombineMapperBase,
     DerivativeBinder as DerivativeBinderBase,
-    DerivativeSourceAndNablaComponentCollector as DerivativeSourceAndNablaComponentCollectorBase,  # noqa: E501
+    DerivativeSourceAndNablaComponentCollector as DerivativeSourceAndNablaComponentCollectorBase,  # ruff:ignore[line-too-long]
     DerivativeSourceFinder as DerivativeSourceFinderBase,
     EvaluationRewriter as EvaluationRewriterBase,
     GraphvizMapper as GraphvizMapperBase,
@@ -269,7 +269,7 @@ class CombineMapper(CombineMapperBase[ResultT, []]):
 
 # {{{ Collector
 
-class Collector(CollectorBase[CollectedT, []], CombineMapper[Set[CollectedT]]):
+class Collector(CollectorBase[CollectedT, []], CombineMapper[AbstractSet[CollectedT]]):
     def _map_leaf(self,
                 expr: pp.Ones
                     | pp.ErrorExpression
@@ -277,21 +277,15 @@ class Collector(CollectorBase[CollectedT, []], CombineMapper[Set[CollectedT]]):
                     | pp.NodeCoordinateComponent
                     | pp.QWeight
                     | pp.SpatialConstant
-            ) -> Set[CollectedT]:
+            ) -> AbstractSet[CollectedT]:
         return set()
 
-    map_ones: \
-        Callable[[Self, pp.Ones], Set[CollectedT]] = _map_leaf
-    map_is_shape_class: \
-        Callable[[Self, pp.IsShapeClass], Set[CollectedT]] = _map_leaf
-    map_error_expression: \
-        Callable[[Self, pp.ErrorExpression], Set[CollectedT]] = _map_leaf
-    map_node_coordinate_component: \
-        Callable[[Self, pp.NodeCoordinateComponent], Set[CollectedT]] = _map_leaf
-    map_q_weight: \
-        Callable[[Self, pp.QWeight], Set[CollectedT]] = _map_leaf
-    map_spatial_constant: \
-        Callable[[Self, pp.SpatialConstant], Set[CollectedT]] = _map_leaf
+    map_ones: Callable[[Self, pp.Ones], AbstractSet[CollectedT]] = _map_leaf
+    map_is_shape_class: Callable[[Self, pp.IsShapeClass], AbstractSet[CollectedT]] = _map_leaf  # ruff:ignore[line-too-long]
+    map_error_expression: Callable[[Self, pp.ErrorExpression], AbstractSet[CollectedT]] = _map_leaf  # ruff:ignore[line-too-long]
+    map_node_coordinate_component: Callable[[Self, pp.NodeCoordinateComponent], AbstractSet[CollectedT]] = _map_leaf  # ruff:ignore[line-too-long]
+    map_q_weight: Callable[[Self, pp.QWeight], AbstractSet[CollectedT]] = _map_leaf
+    map_spatial_constant: Callable[[Self, pp.SpatialConstant], AbstractSet[CollectedT]] = _map_leaf  # ruff:ignore[line-too-long]
 
 
 class OperatorCollector(Collector[pp.IntG]):
@@ -386,8 +380,17 @@ class FlattenMapper(FlattenMapperBase, IdentityMapper):
     pass
 
 
-def flatten(expr: ArithmeticExpression):
-    return FlattenMapper().rec_arith(expr)
+def flatten(expr: pp.OperandTc) -> pp.OperandTc:
+    from pymbolic.geometric_algebra import MultiVector, componentwise
+    from pytools.obj_array import ObjectArray
+
+    def func(expr_i: ArithmeticExpression) -> ArithmeticExpression:
+        return FlattenMapper().rec_arith(expr_i)
+
+    if isinstance(expr, (ObjectArray, MultiVector)):
+        return componentwise(func, expr)
+    else:
+        return cast("pp.OperandTc", func(expr))
 
 # }}}
 
@@ -578,9 +581,11 @@ class DiscretizationStageTagger(IdentityMapper):
     """
 
     def __init__(self, discr_stage):
-        if not (discr_stage == pp.QBX_SOURCE_STAGE1
-                or discr_stage == pp.QBX_SOURCE_STAGE2
-                or discr_stage == pp.QBX_SOURCE_QUAD_STAGE2):
+        if discr_stage not in {
+                pp.QBX_SOURCE_STAGE1,
+                pp.QBX_SOURCE_STAGE2,
+                pp.QBX_SOURCE_QUAD_STAGE2,
+            }:
             raise ValueError(f'unknown discr stage tag: "{discr_stage}"')
 
         self.discr_stage = discr_stage
@@ -733,10 +738,10 @@ class UnregularizedPreprocessor(IdentityMapper):
             expr,
             qbx_forced_limit=None,
             densities=self.rec(expr.densities),
-            kernel_arguments={
+            kernel_arguments=constantdict({
                 name: componentwise(self.rec_arith, arg_expr)
                 for name, arg_expr in expr.kernel_arguments.items()
-            }
+            })
         )
 
 # }}}

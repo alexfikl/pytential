@@ -38,7 +38,9 @@ from meshmode.mesh.generation import NArmedStarfish, ellipse
 
 from pytential import GeometryCollection, sym
 from pytential.array_context import PytestPyOpenCLArrayContextFactory
-from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
+from pytential.utils import (
+    pytest_teardown_function as teardown_function,  # ruff:ignore[unused-import]
+)
 
 
 if TYPE_CHECKING:
@@ -374,7 +376,12 @@ def test_skeletonize_by_proxy(actx_factory: ArrayContextFactory, case, visualize
 
     import scipy.linalg.interpolative as sli
 
-    sli.seed(42)
+    try:
+        # NOTE: this function was removed in scipy 1.17.0
+        sli.seed(42)
+    except AttributeError:
+        pass
+
     rng = np.random.default_rng(42)
 
     actx = actx_factory()
@@ -424,7 +431,11 @@ def test_skeletonize_by_proxy_convergence(
     """
     import scipy.linalg.interpolative as sli
 
-    sli.seed(42)
+    try:
+        # NOTE: this function was removed in scipy 1.17.0
+        sli.seed(42)
+    except AttributeError:
+        pass
     rng = np.random.default_rng(42)
 
     actx = actx_factory()
@@ -465,7 +476,7 @@ def test_skeletonize_by_proxy_convergence(
                 actx, case, r, places=places, mat=mat,
                 suffix=f"{suffix}_{i:04d}", rng=rng, visualize=False)
 
-        was_zero = rec_error[i] == 0.0
+        was_zero = abs(rec_error[i]) < 1.0e-15
         eoc.add_data_point(id_eps[i], rec_error[i])
         if was_zero:
             break
@@ -496,7 +507,7 @@ def test_skeletonize_by_proxy_convergence(
 if __name__ == "__main__":
     import sys
 
-    from pytential.array_context import _acf  # noqa: F401
+    from pytential.array_context import _acf  # ruff:ignore[unused-import]
 
     if len(sys.argv) > 1:
         exec(sys.argv[1])

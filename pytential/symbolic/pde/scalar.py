@@ -44,7 +44,7 @@ import numpy as np
 from typing_extensions import override
 
 from pymbolic.typing import ArithmeticExpression
-from sumpy.kernel import DirectionalSourceDerivative, Kernel
+from sumpy.kernel import DirectionalSourceDerivative, ScalarKernel
 
 from pytential import sym
 
@@ -96,14 +96,14 @@ class L2WeightedPDEOperator(ABC):
     .. automethod:: __init__
     """
 
-    kernel: Kernel
+    kernel: ScalarKernel
     """The kernel used in the integral operator."""
     use_l2_weighting: bool
     """If *True*, :math:`L^2`-weighting is performed. This can be turned off for
     testing purposes, but should be enabled for other applications.
     """
 
-    def __init__(self, kernel: Kernel, *, use_l2_weighting: bool = True) -> None:
+    def __init__(self, kernel: ScalarKernel, *, use_l2_weighting: bool = True) -> None:
         self.kernel = kernel
         self.use_l2_weighting = use_l2_weighting
 
@@ -237,13 +237,13 @@ class DirichletOperator(L2WeightedPDEOperator):
 
     def __init__(
             self,
-            kernel: Kernel,
+            kernel: ScalarKernel,
             loc_sign: Side, *,
-            alpha: int | float | complex | None = None,
+            alpha: complex | None = None,
             use_l2_weighting: bool = False,
             kernel_arguments: dict[str, Operand] | None = None) -> None:
         assert loc_sign in [-1, 1]
-        assert isinstance(kernel, Kernel)
+        assert isinstance(kernel, ScalarKernel)
 
         if kernel_arguments is None:
             kernel_arguments = {}
@@ -398,14 +398,14 @@ class NeumannOperator(L2WeightedPDEOperator):
     """
 
     def __init__(self,
-            kernel: Kernel,
+            kernel: ScalarKernel,
             loc_sign: Side, *,
-            alpha: int | float | complex | None = None,
+            alpha: complex | None = None,
             use_improved_operator: bool = True,
             use_l2_weighting: bool = False,
             kernel_arguments: dict[str, Any] | None = None):
         assert loc_sign in [-1, 1]
-        assert isinstance(kernel, Kernel)
+        assert isinstance(kernel, ScalarKernel)
 
         if kernel_arguments is None:
             kernel_arguments = {}
@@ -517,7 +517,6 @@ class NeumannOperator(L2WeightedPDEOperator):
                 Dp1 = sym.Dp(
                     laplace, laplace_s_inv_sqrt_w_u,
                     qbx_forced_limit=+1,
-                    kernel_arguments=kernel_arguments,
                     source=dofdesc, target=dofdesc)
 
                 DpS0u = Dp0 - Dp1 + Dp0S0u
@@ -589,12 +588,12 @@ class BiharmonicClampedPlateOperator:
     .. automethod:: __init__
     """
 
-    kernel: Kernel
+    kernel: ScalarKernel
     """The kernel used in the integral operator."""
     loc_sign: Side
     """Side of the operator evaluation."""
 
-    def __init__(self, kernel: Kernel, loc_sign: Side) -> None:
+    def __init__(self, kernel: ScalarKernel, loc_sign: Side) -> None:
         if loc_sign != -1:
             raise ValueError(
                 "only interior problems (loc_sign == -1) are supported")
@@ -644,10 +643,10 @@ class BiharmonicClampedPlateOperator:
 
             map_potentials = default_map_potentials
 
-        def dn(knl: Kernel) -> Kernel:
+        def dn(knl: ScalarKernel) -> ScalarKernel:
             return DirectionalSourceDerivative(knl, "normal_dir")
 
-        def dt(knl: Kernel) -> Kernel:
+        def dt(knl: ScalarKernel) -> ScalarKernel:
             return DirectionalSourceDerivative(knl, "tangent_dir")
 
         from pytools.obj_array import from_numpy

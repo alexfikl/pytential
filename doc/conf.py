@@ -47,6 +47,9 @@ nitpick_ignore_regex = [
     # https://github.com/jorenham/optype/issues/430
     ["py:class", r"optype.*"],
     ["py:class", r"onp.*"],
+    # sphinx >= 9.0 errors
+    ["py:class", r"NOT_PROVIDED"],
+    ["py:class", r"Callable\[.*"],
 ]
 
 
@@ -81,6 +84,7 @@ sphinxconfig_missing_reference_aliases = {
     "ArrayContainer": "obj:arraycontext.ArrayContainer",
     "ArrayOrContainerOrScalar": "obj:arraycontext.ArrayOrContainerOrScalar",
     "ArrayOrContainerT": "obj:arraycontext.ArrayOrContainerT",
+    "arraycontext.typing.ArrayOrContainerT": "obj:arraycontext.ArrayOrContainerT",
     "PyOpenCLArrayContext": "class:arraycontext.PyOpenCLArrayContext",
     "ScalarLike": "obj:arraycontext.ScalarLike",
     # modepy
@@ -88,25 +92,28 @@ sphinxconfig_missing_reference_aliases = {
     # meshmode
     "Discretization": "class:meshmode.discretization.Discretization",
     "DOFArray": "class:meshmode.dof_array.DOFArray",
+    "ElementGroupFactory": "class:meshmode.discretization.ElementGroupFactory",
     # boxtree
+    "ExtentNorm": "obj:boxtree.tree_build.ExtentNorm",
     "FromSepSmallerCrit": "obj:boxtree.traversal.FromSepSmallerCrit",
     "TimingResult": "class:boxtree.timing.TimingResult",
     "TreeKind": "obj:boxtree.tree_build.TreeKind",
     # sumpy
     "ExpansionBase": "class:sumpy.expansion.ExpansionBase",
     "ExpansionFactoryBase": "class:sumpy.expansion.ExpansionFactoryBase",
-    "Kernel": "class:sumpy.kernel.Kernel",
+    "ScalarKernel": "class:sumpy.kernel.ScalarKernel",
     "HelmholtzKernel": "class:sumpy.kernel.HelmholtzKernel",
     "P2P": "class:sumpy.p2p.P2P",
     "P2PBase": "class:sumpy.p2p.P2PBase",
     "FMMLevelToOrder": "class:sumpy.fmm.FMMLevelToOrder",
-    "MultipoleExpansionFromOrderFactory": "class:sumpy.fmm.MultipoleExpansionFromOrderFactory",  # noqa: E501
+    "MultipoleExpansionFromOrderFactory": "class:sumpy.fmm.MultipoleExpansionFromOrderFactory",  # ruff:ignore[line-too-long]
     "LocalExpansionFromOrderFactory": "class:sumpy.fmm.LocalExpansionFromOrderFactory",
     # pytential
     "DOFDescriptorLike": "data:pytential.symbolic.dof_desc.DOFDescriptorLike",
     "DOFGranularity": "data:pytential.symbolic.dof_desc.DOFGranularity",
     "DiscretizationStage": "data:pytential.symbolic.dof_desc.DiscretizationStage",
     "ExpressionNode": "class:pytential.symbolic.primitives.ExpressionNode",
+    "FMMBackend": "obj:pytential.qbx.FMMBackend",
     "GeometryId": "data:pytential.symbolic.dof_desc.GeometryId",
     "KernelArgumentLike": "obj:pytential.symbolic.primitives.KernelArgumentLike",
     "KernelArgumentMapping": "obj:pytential.symbolic.primitives.KernelArgumentMapping",
@@ -116,8 +123,8 @@ sphinxconfig_missing_reference_aliases = {
     "Side": "obj:pytential.symbolic.primitives.Side",
     "TargetOrDiscretization": "obj:pytential.target.TargetOrDiscretization",
     "VectorExpression": "obj:pytential.symbolic.pde.scalar.VectorExpression",
-    "pytential.symbolic.dof_desc.DOFDescriptorLike": "data:pytential.symbolic.dof_desc.DOFDescriptorLike",  # noqa: E501
-    "pytential.symbolic.primitives.ExpressionNode": "class:pytential.symbolic.primitives.ExpressionNode",  # noqa: E501
+    "pytential.symbolic.dof_desc.DOFDescriptorLike": "data:pytential.symbolic.dof_desc.DOFDescriptorLike",  # ruff:ignore[line-too-long]
+    "pytential.symbolic.primitives.ExpressionNode": "class:pytential.symbolic.primitives.ExpressionNode",  # ruff:ignore[line-too-long]
     "sym.DOFDescriptor": "class:pytential.symbolic.dof_desc.DOFDescriptor",
     "sym.IntG": "class:pytential.symbolic.primitives.IntG",
     "sym.var": "obj:pytential.symbolic.primitives.var",
@@ -125,4 +132,4 @@ sphinxconfig_missing_reference_aliases = {
 
 
 def setup(app):
-    app.connect("missing-reference", process_autodoc_missing_reference)  # noqa: F821
+    app.connect("missing-reference", process_autodoc_missing_reference)  # ruff:ignore[undefined-name]

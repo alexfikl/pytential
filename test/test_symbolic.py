@@ -45,7 +45,9 @@ from meshmode.discretization.poly_element import (
 
 from pytential import bind, sym
 from pytential.array_context import PytestPyOpenCLArrayContextFactory
-from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
+from pytential.utils import (
+    pytest_teardown_function as teardown_function,  # ruff:ignore[unused-import]
+)
 
 
 if TYPE_CHECKING:
@@ -306,7 +308,7 @@ def test_interpolation(
     if name in ("default", "default_explicit", "stage2", "quad"):
         error = la.norm(sigma_target_interp - sigma_target) / la.norm(sigma_target)
         assert error < 1.0e-10
-    elif name in ("stage2_center",):
+    elif name == "stage2_center":
         assert len(sigma_target_interp) == 2 * len(sigma_target)
     else:
         raise ValueError(f"unknown test case name: {name}")
@@ -466,9 +468,9 @@ def test_derivative_binder_expr():
 # {{{ test_mapper_kernel_transformation_remover
 
 def _make_operator(ambient_dim: int, op_name: str, k: float, *, side: int = +1):
-    from sumpy.kernel import HelmholtzKernel, Kernel, LaplaceKernel
+    from sumpy.kernel import HelmholtzKernel, LaplaceKernel, ScalarKernel
     if k == 0:
-        kernel: Kernel = LaplaceKernel(ambient_dim)
+        kernel: ScalarKernel = LaplaceKernel(ambient_dim)
         kernel_arguments = {}
     else:
         kernel = HelmholtzKernel(ambient_dim)
@@ -607,7 +609,7 @@ def test_derivative_with_spatial_constant():
 if __name__ == "__main__":
     import sys
 
-    from pytential.array_context import _acf  # noqa: F401
+    from pytential.array_context import _acf  # ruff:ignore[unused-import]
 
     if len(sys.argv) > 1:
         exec(sys.argv[1])

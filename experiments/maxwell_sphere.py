@@ -2,7 +2,7 @@ import numpy as np
 import pyopencl as cl
 from sumpy.visualization import FieldPlotter
 #from mayavi import mlab
-from sumpy.kernel import one_kernel_2d, LaplaceKernel, HelmholtzKernel  # noqa
+from sumpy.kernel import OneKernel, LaplaceKernel, HelmholtzKernel  # noqa
 
 import faulthandler
 faulthandler.enable()
@@ -146,7 +146,7 @@ def main():
 
         def dipole3e(x,y,z,source,strength,k):
         #
-        #  evalaute electric and magnetic field due
+        #  evaluate electric and magnetic field due
         #  to monochromatic electric dipole located at "source"
         #  with intensity "strength"
 
@@ -159,7 +159,7 @@ def main():
 
         def dipole3m(x,y,z,source,strength,k):
         #
-        #  evalaute electric and magnetic field due
+        #  evaluate electric and magnetic field due
         #  to monochromatic magnetic dipole located at "source"
         #  with intensity "strength"
             evec = green3m(x,y,z,source,strength,k)

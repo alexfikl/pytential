@@ -30,7 +30,7 @@ THE SOFTWARE.
 import logging
 from abc import abstractmethod
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 from mako.template import Template
@@ -221,7 +221,6 @@ class AbstractQBXCostModel(BaseAbstractFMMCostModel):
             representing the cost of adding all direct evaluation sources to
             QBX local expansions of centers in ``target_boxes[i]``.
         """
-        pass
 
     @abstractmethod
     def process_m2qbxl(self, actx: PyOpenCLArrayContext, geo_data, m2qbxl_cost):
@@ -234,7 +233,6 @@ class AbstractQBXCostModel(BaseAbstractFMMCostModel):
             representing the cost of translating multipole expansions of list
             3 boxes at all source levels to all QBX centers in ``target_boxes[i]``.
         """
-        pass
 
     @abstractmethod
     def process_l2qbxl(self, actx: PyOpenCLArrayContext, geo_data, l2qbxl_cost):
@@ -247,7 +245,6 @@ class AbstractQBXCostModel(BaseAbstractFMMCostModel):
             representing the cost of translating box local expansions to all
             QBX local expansions.
         """
-        pass
 
     @abstractmethod
     def process_eval_qbxl(self, actx: PyOpenCLArrayContext, geo_data, qbxl2p_cost):
@@ -259,7 +256,6 @@ class AbstractQBXCostModel(BaseAbstractFMMCostModel):
             representing the cost of evaluating all targets associated with QBX
             centers in ``target_boxes[i]`` from QBX local expansions.
         """
-        pass
 
     @abstractmethod
     def process_eval_target_specific_qbxl(self, actx: PyOpenCLArrayContext,
@@ -278,7 +274,6 @@ class AbstractQBXCostModel(BaseAbstractFMMCostModel):
             centers in ``target_boxes[i]`` from the direct evaluation sources of
             ``target_boxes[i]``.
         """
-        pass
 
     def qbx_cost_factors_for_kernels_from_model(
             self, actx: PyOpenCLArrayContext, nlevels, xlat_cost, context):
@@ -515,7 +510,7 @@ class AbstractQBXCostModel(BaseAbstractFMMCostModel):
 
         return calibration_params
 
-    _QBX_STAGE_TO_CALIBRATION_PARAMETER = {
+    _QBX_STAGE_TO_CALIBRATION_PARAMETER: ClassVar[dict[str, str]] = {
         "form_global_qbx_locals": "c_p2qbxl",
         "translate_box_multipoles_to_qbx_local": "c_m2qbxl",
         "translate_box_local_to_qbx_local": "c_l2qbxl",
@@ -659,7 +654,7 @@ class QBXCostModel(AbstractQBXCostModel, FMMCostModel):
                         nqbx_centers += global_qbx_center_weight[iparticle];
 
                     nqbx_centers_itgt_box[i] = nqbx_centers;
-                """).render(        # noqa: E501
+                """).render(        # ruff:ignore[line-too-long]
                     box_id_t=dtype_to_ctype(box_id_dtype),
                     particle_id_t=dtype_to_ctype(particle_id_dtype)
                 ),

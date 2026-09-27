@@ -39,7 +39,9 @@ from sumpy.visualization import FieldPlotter
 
 from pytential import GeometryCollection, bind, norm, sym
 from pytential.array_context import PytestPyOpenCLArrayContextFactory
-from pytential.utils import pytest_teardown_function as teardown_function  # noqa: F401
+from pytential.utils import (
+    pytest_teardown_function as teardown_function,  # ruff:ignore[unused-import]
+)
 
 
 logger = logging.getLogger(__name__)
@@ -364,9 +366,9 @@ def test_unregularized_with_ones_kernel(actx_factory: ArrayContextFactory):
         auto_where=("source", "target"),
     )
 
-    from sumpy.kernel import one_kernel_2d
+    from sumpy.kernel import OneKernel
     sigma_sym = sym.var("sigma")
-    op = sym.int_g_vec(one_kernel_2d, sigma_sym, qbx_forced_limit=None)
+    op = sym.int_g_vec(OneKernel(discr.ambient_dim), sigma_sym, qbx_forced_limit=None)
 
     sigma = discr.zeros(actx) + 1
 
@@ -565,7 +567,7 @@ def test_3d_jump_relations(
                 / norm(density_discr, density, np.inf))
         eoc_rec.add_data_point(h_max, err)
 
-        logging.info("error: nel %d h_max %.5e %.5e", nel_factor, h_max, err)
+        logger.info("error: nel %d h_max %.5e %.5e", nel_factor, h_max, err)
 
         # {{{ visualization
 
@@ -631,7 +633,7 @@ def test_3d_jump_relations(
 if __name__ == "__main__":
     import sys
 
-    from pytential.array_context import _acf  # noqa: F401
+    from pytential.array_context import _acf  # ruff:ignore[unused-import]
 
     if len(sys.argv) > 1:
         exec(sys.argv[1])

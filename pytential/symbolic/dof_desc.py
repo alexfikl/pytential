@@ -24,7 +24,7 @@ THE SOFTWARE.
 """
 
 from collections.abc import Hashable
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 from typing_extensions import override
 
@@ -53,41 +53,41 @@ __doc__ = """
 
 # {{{ discretizations
 
-class _UNNAMED_SOURCE:                   # noqa: N801
+class _UNNAMED_SOURCE:                   # ruff:ignore[invalid-class-name]
     """Symbolic identifier for an unnamed source. This is for internal
     use only."""
 
 
-class _UNNAMED_TARGET:                   # noqa: N801
+class _UNNAMED_TARGET:                   # ruff:ignore[invalid-class-name]
     """Symbolic identifier for an unnamed target. This is for internal
     use only."""
 
 
-class DEFAULT_SOURCE:                   # noqa: N801
+class DEFAULT_SOURCE:                   # ruff:ignore[invalid-class-name]
     """Symbolic identifier for the default source. Geometries with
     this value get replaced with the default source given to
     :func:`pytential.bind`."""
 
 
-class DEFAULT_TARGET:                   # noqa: N801
+class DEFAULT_TARGET:                   # ruff:ignore[invalid-class-name]
     """Symbolic identifier for the default target. Geometries with
     this value get replaced with the default target given to
     :func:`pytential.bind`."""
 
 
-class QBX_SOURCE_STAGE1:                # noqa: N801
+class QBX_SOURCE_STAGE1:                # ruff:ignore[invalid-class-name]
     """Symbolic identifier for the Stage 1 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
 
 
-class QBX_SOURCE_STAGE2:                # noqa: N801
+class QBX_SOURCE_STAGE2:                # ruff:ignore[invalid-class-name]
     """Symbolic identifier for the Stage 2 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
 
 
-class QBX_SOURCE_QUAD_STAGE2:           # noqa: N801
+class QBX_SOURCE_QUAD_STAGE2:           # ruff:ignore[invalid-class-name]
     """Symbolic identifier for the upsampled Stage 2 discretization of a
     :class:`pytential.qbx.QBXLayerPotentialSource`.
     """
@@ -98,15 +98,15 @@ class QBX_SOURCE_QUAD_STAGE2:           # noqa: N801
 
 # {{{ granularity
 
-class GRANULARITY_NODE:                 # noqa: N801
+class GRANULARITY_NODE:                 # ruff:ignore[invalid-class-name]
     """DOFs are per node."""
 
 
-class GRANULARITY_CENTER:               # noqa: N801
+class GRANULARITY_CENTER:               # ruff:ignore[invalid-class-name]
     """DOFs interleaved per expansion center (two per node, one on each side)."""
 
 
-class GRANULARITY_ELEMENT:              # noqa: N801
+class GRANULARITY_ELEMENT:              # ruff:ignore[invalid-class-name]
     """DOFs per discretization element."""
 
 
@@ -166,15 +166,19 @@ class DOFDescriptor:
         if granularity is None:
             granularity = GRANULARITY_NODE
 
-        if not (discr_stage is None
-                or discr_stage == QBX_SOURCE_STAGE1
-                or discr_stage == QBX_SOURCE_STAGE2
-                or discr_stage == QBX_SOURCE_QUAD_STAGE2):
+        if discr_stage not in {
+                None,
+                QBX_SOURCE_STAGE1,
+                QBX_SOURCE_STAGE2,
+                QBX_SOURCE_QUAD_STAGE2,
+            }:
             raise ValueError(f"unknown discr stage tag: '{discr_stage}'")
 
-        if not (granularity == GRANULARITY_NODE
-                or granularity == GRANULARITY_CENTER
-                or granularity == GRANULARITY_ELEMENT):
+        if granularity not in {
+                GRANULARITY_NODE,
+                GRANULARITY_CENTER,
+                GRANULARITY_ELEMENT,
+            }:
             raise ValueError(f"unknown granularity: '{granularity}'")
 
         self.geometry = geometry
@@ -212,13 +216,13 @@ class DOFDescriptor:
         return hash((type(self),
             self.geometry, self.discr_stage, self.granularity))
 
-    def __eq__(self, other: Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         return (type(self) is type(other)
                 and self.geometry == other.geometry
                 and self.discr_stage == other.discr_stage
                 and self.granularity == other.granularity)
 
-    def __ne__(self, other: Any) -> bool:
+    def __ne__(self, other: object) -> bool:
         return not self.__eq__(other)
 
     @override
